@@ -34,3 +34,18 @@ func TestParseControlKeys(t *testing.T) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
 }
+
+func TestParseMouse(t *testing.T) {
+	got, err := Parse([]byte("\x1b[<0;10;5M\x1b[<0;10;5m\x1b[<64;10;5M"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Event{
+		{Kind: KeyMouse, Mouse: MouseEvent{Button: 0, Col: 10, Row: 5, Press: true}},
+		{Kind: KeyMouse, Mouse: MouseEvent{Button: 0, Col: 10, Row: 5, Press: false}},
+		{Kind: KeyMouse, Mouse: MouseEvent{Button: 0, Col: 10, Row: 5, Press: true, Wheel: -1}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+}

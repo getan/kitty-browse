@@ -20,9 +20,8 @@ chromedp ──CDP screencast──> internal/render ──rasterm/Kitty──> 
   [`termcast`](https://github.com/chromedp/termcast): it streams Chromium's
   viewport to terminals that speak Kitty, iTerm2 or Sixel graphics, but leaves
   row 1 free for the address bar.
-- The TUI is intentionally not in this first commit. Keeping the browser
-  lifecycle separate lets a future TUI, `tuios` pane, or automation tool reuse
-  the same session.
+- The browser lifecycle stays separate so a future `tuios` pane or automation
+  tool can reuse the same session.
 
 ## Requirements
 
@@ -50,6 +49,8 @@ go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 | `Alt+Right` / `Right` | forward |
 | `Ctrl+R` / `r` | reload |
 | `q` / `Ctrl+C` / `Ctrl+Q` | quit |
+| mouse click | left-click the page |
+| mouse wheel | scroll the page |
 
 Useful flags:
 
@@ -66,7 +67,7 @@ Useful flags:
 - [x] Chromium lifecycle and page navigation
 - [x] Kitty/iTerm2/Sixel frame streaming
 - [x] Address bar and navigation keys
-- [ ] Mouse cell → viewport pixel mapping
+- [x] Mouse cell → viewport pixel mapping
 - [ ] Hint mode (`Alt+F`) driven by a page-side DOM query
 - [ ] History and bookmarks
 - [ ] Region rendering so a TUI can keep its own chrome

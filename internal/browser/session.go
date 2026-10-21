@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 )
 
@@ -102,6 +103,31 @@ func (s *Session) Forward(ctx context.Context, timeout time.Duration) error {
 // Reload reloads the current URL without adding a history entry.
 func (s *Session) Reload(ctx context.Context, timeout time.Duration) error {
 	return s.load(s.url, timeout)
+}
+
+// SetViewport matches the Chromium viewport to the page area's pixels, so
+// terminal cells map to CSS pixels without a second scale factor.
+func (s *Session) SetViewport(width, height int) error {
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	return chromedp.Do(s.ctx, chromedp.EmulateViewport(int64(width), int64(height), chromedp.EmulateScale(1)))
+}
+
+// Click sends a left click at viewport CSS coordinates.
+func (s *Session) Click(x, y float64) error {
+	return chromedp.Do(s.ctx, chromedp.MouseClickXY(x, y))
+}
+
+// Scroll sends a wheel event at viewport CSS coordinates. Positive deltaY
+// scrolls down.
+func (s *Session) Scroll(x, y, deltaY float64) error {
+	return chromedp.Do(s.ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		_, err := chromedp.Call(ctx, input.DispatchMouseEvent, input.DispatchMouseEventParams{
+			Type: input.DispatchMouseEventTypeMouseWheel, X: x, Y: y, DeltaX: 0, DeltaY: deltaY,
+		})
+		return err
+	}))
 }
 
 // History returns the owned history and the current index.

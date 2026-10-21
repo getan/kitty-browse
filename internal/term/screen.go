@@ -38,7 +38,7 @@ func Open(in *os.File, out io.Writer) (*Screen, error) {
 		return nil, fmt.Errorf("terminal size: %w", err)
 	}
 	s := &Screen{in: in, out: out, state: state, rows: rows, cols: cols}
-	_, _ = io.WriteString(out, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
+	_, _ = io.WriteString(out, "\x1b[?1049h\x1b[?25l\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[H")
 	return s, nil
 }
 
@@ -52,7 +52,7 @@ func (s *Screen) Close() {
 		s.mu.Unlock()
 		return
 	}
-	_, _ = io.WriteString(s.out, "\x1b[?25h\x1b[?1049l")
+	_, _ = io.WriteString(s.out, "\x1b[?1002l\x1b[?1006l\x1b[?25h\x1b[?1049l")
 	state := s.state
 	s.state = nil
 	s.mu.Unlock()

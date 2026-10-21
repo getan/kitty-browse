@@ -28,12 +28,24 @@ const (
 	KeyCtrlC
 	KeyCtrlQ
 	KeyResize
+	KeyMouse
 )
 
 // Event is a key or terminal event.
 type Event struct {
-	Kind EventKind
-	Rune rune
+	Kind  EventKind
+	Rune  rune
+	Mouse MouseEvent
+}
+
+// MouseEvent is one SGR mouse report.
+type MouseEvent struct {
+	Button int
+	Col    int
+	Row    int
+	Press  bool
+	Motion bool
+	Wheel  int // -1 up, 1 down, 0 not a wheel
 }
 
 // ReadEvent reads one key. Escape sequences are recognized; a lone ESC is
@@ -115,6 +127,12 @@ func readCSI(r *bufio.Reader) (Event, error) {
 			break
 		}
 	}
+	if len(seq) > 0 && seq[0] == '<' {
+		if ev, ok := parseMouse(string(seq)); ok {
+			return ev, nil
+		}
+		return Event{}, nil
+	}
 	switch string(seq) {
 	case "A":
 		return Event{Kind: KeyUp}, nil
@@ -130,6 +148,26 @@ func readCSI(r *bufio.Reader) (Event, error) {
 		return Event{Kind: KeyAltRight}, nil
 	}
 	return Event{}, nil
+}
+
+func parseMouse(seq string) (Event, bool) {
+	if len(seq) < 6 || seq[len(seq)-1] != 'M' && seq[len(seq)-1] != 'm' {
+		return Event{}, false
+	}
+	press := seq[len(seq)-1] == 'M'
+	var b, x, y int
+	if _, err := fmt.Sscanf(seq, "<%d;%d;%d", &b, &x, &y); err != nil {
+		return Event{}, false
+	}
+	m := MouseEvent{Button: b & 3, Col: x, Row: y, Press: press, Motion: b&32 != 0}
+	if b&64 != 0 {
+		if b&1 != 0 {
+			m.Wheel = 1
+		} else {
+			m.Wheel = -1
+		}
+	}
+	return Event{Kind: KeyMouse, Mouse: m}, true
 }
 
 func readSS3(r *bufio.Reader) (Event, error) {

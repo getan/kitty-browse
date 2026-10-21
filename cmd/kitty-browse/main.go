@@ -59,11 +59,19 @@ func main() {
 
 	rows, cols := screen.Size()
 	width, height := *maxWidth, *maxHeight
+	pixels := term.QueryCellPixels(os.Stdin, os.Stdout, rows, cols)
+	geom := term.GeometryFor(rows, cols, pixels)
 	if width <= 0 {
-		width = cols * 8
+		width = geom.ContentWidthPx
 	}
 	if height <= 0 {
-		height = max(rows-1, 1) * 16
+		height = geom.ContentHeightPx
+	}
+	geom.ContentWidthPx, geom.ContentHeightPx = width, height
+	if err := sess.SetViewport(width, height); err != nil {
+		screen.Header("kitty-browse: viewport: " + err.Error())
+		time.Sleep(2 * time.Second)
+		return
 	}
 
 	stream, err := render.Start(sess.Context(), render.Config{
@@ -96,7 +104,9 @@ func main() {
 		case <-ctx.Done():
 			return
 		case <-resize:
-			screen.Refresh()
+			rows, cols = screen.Refresh()
+			geom = term.GeometryFor(rows, cols, pixels)
+			_ = sess.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx)
 			screen.Header(model.Header())
 		case <-tick.C:
 			if pending != nil {
@@ -104,6 +114,10 @@ func main() {
 				pending = nil
 			}
 		case ev := <-events:
+			if ev.Kind == term.KeyMouse {
+				handleMouse(sess, geom, ev.Mouse)
+				continue
+			}
 			action := model.Handle(ev)
 			switch action.Kind {
 			case ui.ActionQuit:
@@ -117,6 +131,19 @@ func main() {
 		case img := <-stream.Frames():
 			pending = img
 		}
+	}
+}
+
+func handleMouse(sess *browser.Session, geom term.Geometry, m term.MouseEvent) {
+	x, y, ok := geom.CellToPixel(m.Col, m.Row)
+	if !ok {
+		return
+	}
+	switch {
+	case m.Wheel != 0:
+		_ = sess.Scroll(x, y, float64(m.Wheel)*float64(geom.CellHeight)*4)
+	case m.Press && m.Button == 0:
+		_ = sess.Click(x, y)
 	}
 }
 
