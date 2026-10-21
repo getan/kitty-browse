@@ -1,0 +1,5 @@
+/bin/
+/kitty-browse
+/.cache/
+*.test
+.DS_Store
