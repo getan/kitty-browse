@@ -60,7 +60,10 @@ func (p *Pane) Rename(title string) {
 	}
 	title = strings.TrimSpace(strings.ReplaceAll(title, "\n", " "))
 	if len(title) > 80 {
-		title = title[:78] + "…"
+		r := []rune(title)
+		if len(r) > 80 {
+			title = string(r[:78]) + "…"
+		}
 	}
 	p.runAsync([]string{"set-window", "-w", p.ID, "--name", title})
 }

@@ -113,9 +113,10 @@ const hintScript = `(() => {
   if (elems.length <= chars.length) {
     for (let i = 0; i < elems.length; i++) labels.push(chars[i]);
   } else {
+    outer:
     for (const a of chars) for (const b of chars) {
       labels.push(a + b);
-      if (labels.length >= elems.length) break;
+      if (labels.length >= elems.length) break outer;
     }
   }
   const box = document.createElement('div');

@@ -92,6 +92,7 @@ func main() {
 	if err != nil {
 		screen.Header("kitty-browse: " + err.Error())
 		time.Sleep(2 * time.Second)
+		screen.Close()
 		if errors.Is(err, render.ErrNoGraphics) {
 			log.Fatal("this terminal has no Kitty/iTerm2/Sixel graphics support")
 		}
