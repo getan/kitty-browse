@@ -49,6 +49,7 @@ go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 | `Alt+Right` / `Right` | forward |
 | `Ctrl+R` / `r` | reload |
 | `q` / `Ctrl+C` / `Ctrl+Q` | quit |
+| `Alt+F` | hint mode; type a label to click/focus |
 | mouse click | left-click the page |
 | mouse wheel | scroll the page |
 
@@ -68,7 +69,7 @@ Useful flags:
 - [x] Kitty/iTerm2/Sixel frame streaming
 - [x] Address bar and navigation keys
 - [x] Mouse cell → viewport pixel mapping
-- [ ] Hint mode (`Alt+F`) driven by a page-side DOM query
+- [x] Hint mode (`Alt+F`) driven by a page-side DOM query
 - [ ] History and bookmarks
 - [ ] Region rendering so a TUI can keep its own chrome
 - [ ] Text extraction fallback for copy/readability

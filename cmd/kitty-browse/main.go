@@ -126,12 +126,39 @@ func main() {
 				runNavigation(sess, model, action, *load)
 			case ui.ActionBack, ui.ActionForward, ui.ActionReload:
 				runNavigation(sess, model, action, *load)
+			case ui.ActionShowHints:
+				hints, err := sess.Hints(sess.Context(), 49)
+				if err != nil {
+					model.Status = err.Error()
+				} else {
+					model.SetHints(hints)
+				}
+			case ui.ActionClearHints:
+				_ = sess.ClearHints(sess.Context())
+				model.ClearHints()
+			case ui.ActionHint:
+				handleHint(sess, model, action.Label)
 			}
 			screen.Header(model.Header())
 		case img := <-stream.Frames():
 			pending = img
 		}
 	}
+}
+
+func handleHint(sess *browser.Session, model *ui.Model, label string) {
+	var target browser.Hint
+	for _, h := range model.Hints {
+		if h.Label == label {
+			target = h
+			break
+		}
+	}
+	_ = sess.ClearHints(sess.Context())
+	if target.Label != "" {
+		_ = sess.Click(float64(target.CX), float64(target.CY))
+	}
+	model.ClearHints()
 }
 
 func handleMouse(sess *browser.Session, geom term.Geometry, m term.MouseEvent) {
@@ -159,6 +186,8 @@ func readInput(in *os.File, events chan<- term.Event) {
 }
 
 func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, timeout time.Duration) {
+	_ = sess.ClearHints(sess.Context())
+	model.ClearHints()
 	var err error
 	switch action.Kind {
 	case ui.ActionNavigate:

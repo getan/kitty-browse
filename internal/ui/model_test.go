@@ -3,6 +3,7 @@ package ui
 import (
 	"testing"
 
+	"github.com/getan/kitty-browse/internal/browser"
 	"github.com/getan/kitty-browse/internal/term"
 )
 
@@ -56,5 +57,32 @@ func TestNavigationKeys(t *testing.T) {
 		if got := m.Handle(tc.ev); got.Kind != tc.want {
 			t.Errorf("%+v = %v, want %v", tc.ev, got.Kind, tc.want)
 		}
+	}
+}
+
+func TestHintModeSelectsLabel(t *testing.T) {
+	m := New("https://example.com")
+	if a := m.Handle(term.Event{Kind: term.KeyAltF}); a.Kind != ActionShowHints {
+		t.Fatalf("alt-f = %+v", a)
+	}
+	m.SetHints([]browser.Hint{{Label: "as"}, {Label: "df"}})
+	if !m.HintMode {
+		t.Fatal("hint mode not entered")
+	}
+	if a := m.Handle(term.Event{Kind: term.KeyText, Rune: 'a'}); a.Kind != ActionNone {
+		t.Fatalf("prefix = %+v", a)
+	}
+	a := m.Handle(term.Event{Kind: term.KeyText, Rune: 's'})
+	if a.Kind != ActionHint || a.Label != "as" || m.HintMode {
+		t.Fatalf("selection = %+v hintmode=%v", a, m.HintMode)
+	}
+}
+
+func TestHintModeEscapeClears(t *testing.T) {
+	m := New("https://example.com")
+	m.Handle(term.Event{Kind: term.KeyAltF})
+	m.SetHints([]browser.Hint{{Label: "a"}})
+	if a := m.Handle(term.Event{Kind: term.KeyEscape}); a.Kind != ActionClearHints {
+		t.Fatalf("escape = %+v", a)
 	}
 }

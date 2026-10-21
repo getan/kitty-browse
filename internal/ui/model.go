@@ -17,13 +17,17 @@ const (
 	ActionBack
 	ActionForward
 	ActionReload
+	ActionShowHints
+	ActionHint
+	ActionClearHints
 	ActionQuit
 )
 
 // Action is the result of one key event.
 type Action struct {
-	Kind ActionKind
-	URL  string
+	Kind  ActionKind
+	URL   string
+	Label string
 }
 
 // Model is the address bar and status state.
@@ -32,6 +36,10 @@ type Model struct {
 	Address string
 	Editing bool
 	Status  string
+
+	HintMode   bool
+	HintBuffer string
+	Hints      []browser.Hint
 }
 
 // New returns a browse-mode model for url.
@@ -46,6 +54,9 @@ func (m *Model) Header() string {
 	}
 	if m.Editing {
 		return "URL: " + m.Address
+	}
+	if m.HintMode {
+		return "hint > " + m.HintBuffer
 	}
 	line := m.URL
 	if m.Status != "" {
@@ -94,6 +105,50 @@ func (m *Model) Handle(ev term.Event) Action {
 		return Action{}
 	}
 
+	if ev.Kind == term.KeyAltF {
+		if m.HintMode {
+			m.HintMode = false
+			m.HintBuffer = ""
+			m.Hints = nil
+			return Action{Kind: ActionClearHints}
+		}
+		m.HintMode = true
+		m.HintBuffer = ""
+		return Action{Kind: ActionShowHints}
+	}
+	if m.HintMode {
+		switch ev.Kind {
+		case term.KeyEscape:
+			m.HintMode = false
+			m.HintBuffer = ""
+			m.Hints = nil
+			return Action{Kind: ActionClearHints}
+		case term.KeyText:
+			m.HintBuffer += string(ev.Rune)
+			for _, h := range m.Hints {
+				if h.Label == m.HintBuffer {
+					label := h.Label
+					m.HintMode = false
+					m.HintBuffer = ""
+					m.Hints = nil
+					return Action{Kind: ActionHint, Label: label}
+				}
+			}
+			// Keep a valid prefix; otherwise start a new label with this key.
+			valid := false
+			for _, h := range m.Hints {
+				if strings.HasPrefix(h.Label, m.HintBuffer) {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				m.HintBuffer = string(ev.Rune)
+			}
+		}
+		return Action{}
+	}
+
 	switch ev.Kind {
 	case term.KeyCtrlL:
 		m.Editing = true
@@ -121,6 +176,26 @@ func (m *Model) Handle(ev term.Event) Action {
 		}
 	}
 	return Action{}
+}
+
+// SetHints installs a fresh page overlay and enters hint mode.
+func (m *Model) SetHints(hints []browser.Hint) {
+	m.Hints = hints
+	m.HintBuffer = ""
+	if len(hints) == 0 {
+		m.HintMode = false
+		m.Status = "no hints"
+		return
+	}
+	m.HintMode = true
+	m.Status = ""
+}
+
+// ClearHints leaves hint mode.
+func (m *Model) ClearHints() {
+	m.HintMode = false
+	m.HintBuffer = ""
+	m.Hints = nil
 }
 
 // AddressTrimmed returns the address without surrounding whitespace.
