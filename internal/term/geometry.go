@@ -107,7 +107,7 @@ func GeometryFor(rows, cols int, p CellPixels) Geometry {
 	if p.HeightPx <= 0 {
 		p.HeightPx = rows * p.CellH
 	}
-	contentRows := rows - 1
+	contentRows := rows - 2
 	if contentRows < 1 {
 		contentRows = 1
 	}

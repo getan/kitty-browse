@@ -28,4 +28,7 @@ func TestCellToPixel(t *testing.T) {
 	if _, _, ok := g.CellToPixel(999, 2); ok {
 		t.Fatal("outside content must not map")
 	}
+	if g.ContentHeightPx != (41-2)*16 {
+		t.Fatalf("content height = %d, want %d", g.ContentHeightPx, (41-2)*16)
+	}
 }

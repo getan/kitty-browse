@@ -96,6 +96,26 @@ func (m *Model) Header() string {
 	return line
 }
 
+// Footer renders the persistent status/help line.
+func (m *Model) Footer(bookmarked bool) string {
+	if m == nil {
+		return ""
+	}
+	switch {
+	case m.Editing:
+		return "Enter navigate · Esc cancel · Backspace edit"
+	case m.HintMode:
+		return "hint: type a label · Esc cancel"
+	case m.Overlay != OverlayNone:
+		return "j/k select · Enter open · Esc close"
+	}
+	line := "Ctrl+L address · Alt+F hints · H history · B bookmarks · q quit"
+	if bookmarked {
+		line = "★ " + line
+	}
+	return line
+}
+
 // SetURL updates the displayed URL after navigation.
 func (m *Model) SetURL(url string) {
 	m.URL = url

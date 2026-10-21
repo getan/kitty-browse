@@ -97,7 +97,7 @@ func main() {
 
 	model := ui.New(sess.URL())
 	refreshLists(model, store)
-	screen.Header(model.Header())
+	drawChrome(screen, model, store)
 
 	events := make(chan term.Event, 16)
 	go readInput(os.Stdin, events)
@@ -116,10 +116,10 @@ func main() {
 			rows, cols = screen.Refresh()
 			geom = term.GeometryFor(rows, cols, pixels)
 			_ = sess.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx)
-			screen.Header(model.Header())
+			drawChrome(screen, model, store)
 		case <-tick.C:
 			if pending != nil {
-				drawFrame(screen, stream, pending)
+				drawFrame(screen, stream, pending, model, store)
 				pending = nil
 			}
 		case ev := <-events:
@@ -172,7 +172,7 @@ func main() {
 			case ui.ActionOverlayClose:
 				model.CloseOverlay()
 			}
-			screen.Header(model.Header())
+			drawChrome(screen, model, store)
 		case img := <-stream.Frames():
 			pending = img
 		}
@@ -250,7 +250,7 @@ func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, tim
 	return true
 }
 
-func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image) {
+func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image, model *ui.Model, store *history.Store) {
 	if img == nil {
 		return
 	}
@@ -260,4 +260,10 @@ func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image) {
 		// A broken pipe or a terminal that went away is a normal exit path.
 		return
 	}
+	screen.Footer(model.Footer(store.IsBookmarked(model.URL)))
+}
+
+func drawChrome(screen *term.Screen, model *ui.Model, store *history.Store) {
+	screen.Header(model.Header())
+	screen.Footer(model.Footer(store.IsBookmarked(model.URL)))
 }

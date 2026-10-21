@@ -74,7 +74,7 @@ Useful flags:
 - [x] Mouse cell → viewport pixel mapping
 - [x] Hint mode (`Alt+F`) driven by a page-side DOM query
 - [x] History and bookmarks
-- [ ] Region rendering so a TUI can keep its own chrome
+- [x] Region rendering so a TUI can keep its own chrome
 - [ ] Text extraction fallback for copy/readability
 - [ ] Optional `tuios` pane integration
 

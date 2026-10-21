@@ -79,10 +79,10 @@ func (s *Screen) Size() (rows, cols int) {
 // BodyRows is the number of rows available to the page image.
 func (s *Screen) BodyRows() int {
 	rows, _ := s.Size()
-	if rows <= 1 {
+	if rows <= 2 {
 		return 1
 	}
-	return rows - 1
+	return rows - 2
 }
 
 // Header draws the one-line address/status bar.
@@ -96,8 +96,23 @@ func (s *Screen) Header(text string) {
 	_, _ = fmt.Fprintf(s.out, "\x1b[1;1H\x1b[2K%s", truncate(text, cols))
 }
 
+// Footer draws the status/help line on the last row.
+func (s *Screen) Footer(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rows < 1 {
+		return
+	}
+	cols := s.cols
+	if cols < 1 {
+		cols = 1
+	}
+	_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", s.rows, truncate(text, cols))
+}
+
 // WriteBody clears only the browser area and lets draw write an image there.
-// Clearing from row 2 leaves the address bar intact.
+// Clearing from row 2 leaves the address bar intact; the footer is redrawn by
+// the caller after the image.
 func (s *Screen) WriteBody(draw func(io.Writer) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

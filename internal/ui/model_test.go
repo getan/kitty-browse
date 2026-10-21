@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/getan/kitty-browse/internal/browser"
@@ -106,5 +107,12 @@ func TestBookmarkToggle(t *testing.T) {
 	a := m.Handle(term.Event{Kind: term.KeyText, Rune: 'b'})
 	if a.Kind != ActionToggleBookmark || a.URL != "https://example.com" {
 		t.Fatalf("bookmark = %+v", a)
+	}
+}
+
+func TestFooterMentionsBookmark(t *testing.T) {
+	m := New("https://example.com")
+	if got := m.Footer(true); !strings.Contains(got, "★") {
+		t.Fatalf("footer = %q", got)
 	}
 }
