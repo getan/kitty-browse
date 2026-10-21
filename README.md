@@ -75,6 +75,7 @@ Useful flags:
 - [x] Hint mode (`Alt+F`) driven by a page-side DOM query
 - [x] History and bookmarks
 - [x] Region rendering so a TUI can keep its own chrome
+- [x] Idle PNG still frames, JPEG while the page is moving
 - [ ] Text extraction fallback for copy/readability
 - [ ] Optional `tuios` pane integration
 

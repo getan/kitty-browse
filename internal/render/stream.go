@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"image/png"
 	"io"
 	"iter"
 	"sync"
@@ -45,6 +46,7 @@ type Stream struct {
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 	err     error
+	last    time.Time
 	stopped bool
 }
 
@@ -129,6 +131,37 @@ func (s *Stream) Err() error {
 	return s.err
 }
 
+// LastFrame reports when the last screencast frame arrived.
+func (s *Stream) LastFrame() time.Time {
+	if s == nil {
+		return time.Time{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
+}
+
+// Still captures a lossless PNG of the current viewport. It is used after the
+// page has been idle, where JPEG ringing makes small text look soft.
+func (s *Stream) Still(ctx context.Context) (image.Image, error) {
+	if s == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	res, err := chromedp.Call(ctx, page.CaptureScreenshot, page.CaptureScreenshotParams{
+		Format: page.CaptureScreenshotFormatPng,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("still screenshot: %w", err)
+	}
+	img, err := png.Decode(bytes.NewReader(res.Data))
+	if err != nil {
+		return nil, fmt.Errorf("decode still: %w", err)
+	}
+	return img, nil
+}
+
 // Stop stops the screencast. It is safe to call more than once.
 func (s *Stream) Stop() {
 	if s == nil {
@@ -172,6 +205,9 @@ func (s *Stream) read(ctx context.Context, frames iter.Seq2[page.EventScreencast
 			s.fail(fmt.Errorf("decode frame: %w", err))
 			continue
 		}
+		s.mu.Lock()
+		s.last = time.Now()
+		s.mu.Unlock()
 		s.publish(ctx, img)
 	}
 }

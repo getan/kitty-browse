@@ -107,6 +107,7 @@ func main() {
 	tick := time.NewTicker(time.Second / time.Duration(max(int(*fps), 1)))
 	defer tick.Stop()
 	var pending image.Image
+	var lastStill time.Time
 
 	for {
 		select {
@@ -121,6 +122,13 @@ func main() {
 			if pending != nil {
 				drawFrame(screen, stream, pending, model, store)
 				pending = nil
+			} else if last := stream.LastFrame(); !last.IsZero() &&
+				time.Since(last) > 400*time.Millisecond &&
+				time.Since(lastStill) > 2*time.Second {
+				if img, err := stream.Still(ctx); err == nil {
+					drawFrame(screen, stream, img, model, store)
+					lastStill = time.Now()
+				}
 			}
 		case ev := <-events:
 			if ev.Kind == term.KeyMouse {
