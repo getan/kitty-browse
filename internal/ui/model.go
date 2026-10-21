@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/getan/kitty-browse/internal/browser"
@@ -20,6 +21,11 @@ const (
 	ActionShowHints
 	ActionHint
 	ActionClearHints
+	ActionOpenHistory
+	ActionOpenBookmarks
+	ActionToggleBookmark
+	ActionOverlaySelect
+	ActionOverlayClose
 	ActionQuit
 )
 
@@ -40,7 +46,22 @@ type Model struct {
 	HintMode   bool
 	HintBuffer string
 	Hints      []browser.Hint
+
+	Overlay      OverlayKind
+	OverlayItems []string
+	OverlayIndex int
+	HistoryURLs  []string
+	BookmarkURLs []string
 }
+
+// OverlayKind selects the one-line picker.
+type OverlayKind int
+
+const (
+	OverlayNone OverlayKind = iota
+	OverlayHistory
+	OverlayBookmarks
+)
 
 // New returns a browse-mode model for url.
 func New(url string) *Model {
@@ -57,6 +78,16 @@ func (m *Model) Header() string {
 	}
 	if m.HintMode {
 		return "hint > " + m.HintBuffer
+	}
+	if m.Overlay != OverlayNone {
+		name := "history"
+		if m.Overlay == OverlayBookmarks {
+			name = "bookmarks"
+		}
+		if len(m.OverlayItems) == 0 {
+			return name + ": empty (Esc)"
+		}
+		return fmt.Sprintf("%s %d/%d: %s", name, m.OverlayIndex+1, len(m.OverlayItems), m.OverlayItems[m.OverlayIndex])
 	}
 	line := m.URL
 	if m.Status != "" {
@@ -101,6 +132,37 @@ func (m *Model) Handle(ev term.Event) Action {
 			}
 		case term.KeyText:
 			m.Address += string(ev.Rune)
+		}
+		return Action{}
+	}
+
+	if m.Overlay != OverlayNone {
+		switch ev.Kind {
+		case term.KeyEscape:
+			m.Overlay = OverlayNone
+			return Action{Kind: ActionOverlayClose}
+		case term.KeyDown, term.KeyText:
+			if ev.Kind == term.KeyDown || ev.Rune == 'j' {
+				if m.OverlayIndex+1 < len(m.OverlayItems) {
+					m.OverlayIndex++
+				}
+			} else if ev.Rune == 'k' {
+				if m.OverlayIndex > 0 {
+					m.OverlayIndex--
+				}
+			}
+		case term.KeyUp:
+			if m.OverlayIndex > 0 {
+				m.OverlayIndex--
+			}
+		case term.KeyEnter:
+			if len(m.OverlayItems) == 0 {
+				m.Overlay = OverlayNone
+				return Action{Kind: ActionOverlayClose}
+			}
+			url := m.OverlayItems[m.OverlayIndex]
+			m.Overlay = OverlayNone
+			return Action{Kind: ActionOverlaySelect, URL: url}
 		}
 		return Action{}
 	}
@@ -173,6 +235,20 @@ func (m *Model) Handle(ev term.Event) Action {
 		case 'l':
 			m.Editing = true
 			m.Address = m.URL
+		case 'H':
+			if len(m.HistoryURLs) == 0 {
+				m.Status = "history empty"
+				return Action{}
+			}
+			return Action{Kind: ActionOpenHistory}
+		case 'B':
+			if len(m.BookmarkURLs) == 0 {
+				m.Status = "bookmarks empty"
+				return Action{}
+			}
+			return Action{Kind: ActionOpenBookmarks}
+		case 'b':
+			return Action{Kind: ActionToggleBookmark, URL: m.URL}
 		}
 	}
 	return Action{}
@@ -196,6 +272,26 @@ func (m *Model) ClearHints() {
 	m.HintMode = false
 	m.HintBuffer = ""
 	m.Hints = nil
+}
+
+// SetLists refreshes the persisted history and bookmark lists.
+func (m *Model) SetLists(history, bookmarks []string) {
+	m.HistoryURLs = append([]string(nil), history...)
+	m.BookmarkURLs = append([]string(nil), bookmarks...)
+}
+
+// OpenOverlay shows one picker.
+func (m *Model) OpenOverlay(kind OverlayKind, items []string) {
+	m.Overlay = kind
+	m.OverlayItems = append([]string(nil), items...)
+	m.OverlayIndex = 0
+}
+
+// CloseOverlay leaves any picker.
+func (m *Model) CloseOverlay() {
+	m.Overlay = OverlayNone
+	m.OverlayItems = nil
+	m.OverlayIndex = 0
 }
 
 // AddressTrimmed returns the address without surrounding whitespace.

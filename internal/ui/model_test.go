@@ -86,3 +86,25 @@ func TestHintModeEscapeClears(t *testing.T) {
 		t.Fatalf("escape = %+v", a)
 	}
 }
+
+func TestHistoryOverlaySelection(t *testing.T) {
+	m := New("https://example.com")
+	m.SetLists([]string{"https://a", "https://b"}, nil)
+	if a := m.Handle(term.Event{Kind: term.KeyText, Rune: 'H'}); a.Kind != ActionOpenHistory {
+		t.Fatalf("open history = %+v", a)
+	}
+	m.OpenOverlay(OverlayHistory, m.HistoryURLs)
+	m.Handle(term.Event{Kind: term.KeyText, Rune: 'j'})
+	a := m.Handle(term.Event{Kind: term.KeyEnter})
+	if a.Kind != ActionOverlaySelect || a.URL != "https://b" {
+		t.Fatalf("select = %+v", a)
+	}
+}
+
+func TestBookmarkToggle(t *testing.T) {
+	m := New("https://example.com")
+	a := m.Handle(term.Event{Kind: term.KeyText, Rune: 'b'})
+	if a.Kind != ActionToggleBookmark || a.URL != "https://example.com" {
+		t.Fatalf("bookmark = %+v", a)
+	}
+}

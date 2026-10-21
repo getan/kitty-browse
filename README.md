@@ -50,6 +50,9 @@ go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 | `Ctrl+R` / `r` | reload |
 | `q` / `Ctrl+C` / `Ctrl+Q` | quit |
 | `Alt+F` | hint mode; type a label to click/focus |
+| `H` | history picker (`j`/`k`, Enter) |
+| `B` | bookmarks picker |
+| `b` | toggle bookmark for the current page |
 | mouse click | left-click the page |
 | mouse wheel | scroll the page |
 
@@ -70,7 +73,7 @@ Useful flags:
 - [x] Address bar and navigation keys
 - [x] Mouse cell → viewport pixel mapping
 - [x] Hint mode (`Alt+F`) driven by a page-side DOM query
-- [ ] History and bookmarks
+- [x] History and bookmarks
 - [ ] Region rendering so a TUI can keep its own chrome
 - [ ] Text extraction fallback for copy/readability
 - [ ] Optional `tuios` pane integration

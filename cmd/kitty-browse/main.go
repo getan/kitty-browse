@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/getan/kitty-browse/internal/browser"
+	"github.com/getan/kitty-browse/internal/history"
 	"github.com/getan/kitty-browse/internal/render"
 	"github.com/getan/kitty-browse/internal/term"
 	"github.com/getan/kitty-browse/internal/ui"
@@ -50,6 +51,13 @@ func main() {
 		log.Fatal(err)
 	}
 	defer sess.Close()
+
+	statePath, pathErr := history.DefaultPath()
+	store, err := history.Open(statePath)
+	if pathErr != nil || err != nil {
+		store, _ = history.Open("")
+	}
+	_ = store.Record(sess.URL())
 
 	screen, err := term.Open(os.Stdin, os.Stdout)
 	if err != nil {
@@ -88,6 +96,7 @@ func main() {
 	defer stream.Stop()
 
 	model := ui.New(sess.URL())
+	refreshLists(model, store)
 	screen.Header(model.Header())
 
 	events := make(chan term.Event, 16)
@@ -123,9 +132,13 @@ func main() {
 			case ui.ActionQuit:
 				return
 			case ui.ActionNavigate:
-				runNavigation(sess, model, action, *load)
+				if runNavigation(sess, model, action, *load) {
+					recordVisit(store, model, sess.URL())
+				}
 			case ui.ActionBack, ui.ActionForward, ui.ActionReload:
-				runNavigation(sess, model, action, *load)
+				if runNavigation(sess, model, action, *load) {
+					recordVisit(store, model, sess.URL())
+				}
 			case ui.ActionShowHints:
 				hints, err := sess.Hints(sess.Context(), 49)
 				if err != nil {
@@ -138,6 +151,26 @@ func main() {
 				model.ClearHints()
 			case ui.ActionHint:
 				handleHint(sess, model, action.Label)
+			case ui.ActionOpenHistory:
+				model.OpenOverlay(ui.OverlayHistory, store.History())
+			case ui.ActionOpenBookmarks:
+				model.OpenOverlay(ui.OverlayBookmarks, store.Bookmarks())
+			case ui.ActionToggleBookmark:
+				on, err := store.ToggleBookmark(action.URL)
+				if err != nil {
+					model.Status = err.Error()
+				} else if on {
+					model.Status = "bookmarked"
+				} else {
+					model.Status = "bookmark removed"
+				}
+				refreshLists(model, store)
+			case ui.ActionOverlaySelect:
+				if runNavigation(sess, model, ui.Action{Kind: ui.ActionNavigate, URL: action.URL}, *load) {
+					recordVisit(store, model, sess.URL())
+				}
+			case ui.ActionOverlayClose:
+				model.CloseOverlay()
 			}
 			screen.Header(model.Header())
 		case img := <-stream.Frames():
@@ -159,6 +192,15 @@ func handleHint(sess *browser.Session, model *ui.Model, label string) {
 		_ = sess.Click(float64(target.CX), float64(target.CY))
 	}
 	model.ClearHints()
+}
+
+func recordVisit(store *history.Store, model *ui.Model, url string) {
+	_ = store.Record(url)
+	refreshLists(model, store)
+}
+
+func refreshLists(model *ui.Model, store *history.Store) {
+	model.SetLists(store.History(), store.Bookmarks())
 }
 
 func handleMouse(sess *browser.Session, geom term.Geometry, m term.MouseEvent) {
@@ -185,9 +227,10 @@ func readInput(in *os.File, events chan<- term.Event) {
 	}
 }
 
-func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, timeout time.Duration) {
+func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, timeout time.Duration) bool {
 	_ = sess.ClearHints(sess.Context())
 	model.ClearHints()
+	model.CloseOverlay()
 	var err error
 	switch action.Kind {
 	case ui.ActionNavigate:
@@ -201,9 +244,10 @@ func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, tim
 	}
 	if err != nil {
 		model.Status = err.Error()
-		return
+		return false
 	}
 	model.SetURL(sess.URL())
+	return true
 }
 
 func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image) {
