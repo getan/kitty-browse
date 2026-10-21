@@ -1,0 +1,60 @@
+package ui
+
+import (
+	"testing"
+
+	"github.com/getan/kitty-browse/internal/term"
+)
+
+func TestAddressBarAndNavigation(t *testing.T) {
+	m := New("https://example.com")
+	if a := m.Handle(term.Event{Kind: term.KeyCtrlL}); a.Kind != ActionNone || !m.Editing {
+		t.Fatalf("ctrl-l = %+v editing=%v", a, m.Editing)
+	}
+	// The address starts as the current URL, so replace it first.
+	for range "https://example.com" {
+		m.Handle(term.Event{Kind: term.KeyBackspace})
+	}
+	for _, r := range "example.org" {
+		m.Handle(term.Event{Kind: term.KeyText, Rune: r})
+	}
+	a := m.Handle(term.Event{Kind: term.KeyEnter})
+	if a.Kind != ActionNavigate || a.URL != "https://example.org" {
+		t.Fatalf("enter = %+v", a)
+	}
+	if m.Editing {
+		t.Fatal("address bar still editing after Enter")
+	}
+}
+
+func TestAddressEscapeAndInvalidURL(t *testing.T) {
+	m := New("https://example.com")
+	m.Handle(term.Event{Kind: term.KeyCtrlL})
+	m.Address = "not a url"
+	a := m.Handle(term.Event{Kind: term.KeyEnter})
+	if a.Kind != ActionNone || m.Status == "" || !m.Editing {
+		t.Fatalf("invalid enter = %+v status=%q editing=%v", a, m.Status, m.Editing)
+	}
+	m.Handle(term.Event{Kind: term.KeyEscape})
+	if m.Editing || m.Address != "https://example.com" {
+		t.Fatalf("escape left editing=%v address=%q", m.Editing, m.Address)
+	}
+}
+
+func TestNavigationKeys(t *testing.T) {
+	m := New("https://example.com")
+	cases := []struct {
+		ev   term.Event
+		want ActionKind
+	}{
+		{term.Event{Kind: term.KeyAltLeft}, ActionBack},
+		{term.Event{Kind: term.KeyAltRight}, ActionForward},
+		{term.Event{Kind: term.KeyCtrlR}, ActionReload},
+		{term.Event{Kind: term.KeyCtrlC}, ActionQuit},
+	}
+	for _, tc := range cases {
+		if got := m.Handle(tc.ev); got.Kind != tc.want {
+			t.Errorf("%+v = %v, want %v", tc.ev, got.Kind, tc.want)
+		}
+	}
+}

@@ -9,15 +9,17 @@ terminals, without the Electron/Rust stack.
 ## How it works
 
 ```text
-chromedp ──CDP screencast──> termcast/rasterm ──Kitty graphics──> terminal
+chromedp ──CDP screencast──> internal/render ──rasterm/Kitty──> terminal
    │
    └── navigation, clicks, input, JS, cookies, downloads
 ```
 
 - [`chromedp`](https://github.com/chromedp/chromedp) owns Chromium and exposes
   navigation/automation.
-- [`termcast`](https://github.com/chromedp/termcast) streams Chromium's viewport
-  to terminals that speak Kitty, iTerm2 or Sixel graphics.
+- `internal/render` is a small region-aware renderer derived from
+  [`termcast`](https://github.com/chromedp/termcast): it streams Chromium's
+  viewport to terminals that speak Kitty, iTerm2 or Sixel graphics, but leaves
+  row 1 free for the address bar.
 - The TUI is intentionally not in this first commit. Keeping the browser
   lifecycle separate lets a future TUI, `tuios` pane, or automation tool reuse
   the same session.
@@ -37,6 +39,18 @@ go run ./cmd/kitty-browse https://example.com
 go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 ```
 
+## Controls
+
+| Key | Action |
+|---|---|
+| `Ctrl+L` / `l` | edit the address bar |
+| `Enter` | navigate to the address |
+| `Esc` | cancel editing, or quit while browsing |
+| `Alt+Left` / `Left` | back |
+| `Alt+Right` / `Right` | forward |
+| `Ctrl+R` / `r` | reload |
+| `q` / `Ctrl+C` / `Ctrl+Q` | quit |
+
 Useful flags:
 
 ```text
@@ -51,7 +65,7 @@ Useful flags:
 
 - [x] Chromium lifecycle and page navigation
 - [x] Kitty/iTerm2/Sixel frame streaming
-- [ ] Address bar and navigation keys
+- [x] Address bar and navigation keys
 - [ ] Mouse cell → viewport pixel mapping
 - [ ] Hint mode (`Alt+F`) driven by a page-side DOM query
 - [ ] History and bookmarks
