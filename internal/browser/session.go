@@ -140,6 +140,15 @@ func (s *Session) Text(ctx context.Context) (string, error) {
 	return out, nil
 }
 
+// Title returns document.title.
+func (s *Session) Title(ctx context.Context) (string, error) {
+	out, err := chromedp.Run(ctx, chromedp.Evaluate[string](`document.title || ""`))
+	if err != nil {
+		return "", fmt.Errorf("page title: %w", err)
+	}
+	return out, nil
+}
+
 // History returns the owned history and the current index.
 func (s *Session) History() ([]string, int) {
 	return append([]string(nil), s.history...), s.index

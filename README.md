@@ -78,7 +78,7 @@ Useful flags:
 - [x] Region rendering so a TUI can keep its own chrome
 - [x] Idle PNG still frames, JPEG while the page is moving
 - [x] Text extraction fallback for copy/readability
-- [ ] Optional `tuios` pane integration
+- [x] Optional `tuios` pane integration
 
 ## Design notes
 
@@ -91,6 +91,13 @@ fork or wrap it to:
    1024×768 cap;
 3. switch to a high-quality still frame when the page is idle;
 4. map terminal mouse coordinates through device scale factor and browser zoom.
+
+## tuios integration
+
+When `kitty-browse` runs inside a tuios pane (`TUIOS_ENV=1` plus a pane id and
+socket), it renames the pane to the current page title. This is cosmetic and
+best-effort: outside tuios, or when the `tuios` binary is unavailable, it is a
+no-op. Exiting restores the shell-derived pane name.
 
 ## References
 

@@ -21,6 +21,7 @@ import (
 	"github.com/getan/kitty-browse/internal/history"
 	"github.com/getan/kitty-browse/internal/render"
 	"github.com/getan/kitty-browse/internal/term"
+	"github.com/getan/kitty-browse/internal/tuios"
 	"github.com/getan/kitty-browse/internal/ui"
 )
 
@@ -51,6 +52,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer sess.Close()
+
+	pane := tuios.FromEnv(nil)
+	defer pane.Clear()
 
 	statePath, pathErr := history.DefaultPath()
 	store, err := history.Open(statePath)
@@ -97,6 +101,7 @@ func main() {
 
 	model := ui.New(sess.URL())
 	refreshLists(model, store)
+	updatePaneTitle(pane, sess)
 	drawChrome(screen, model, store)
 
 	events := make(chan term.Event, 16)
@@ -148,10 +153,12 @@ func main() {
 			case ui.ActionNavigate:
 				if runNavigation(sess, model, action, *load) {
 					recordVisit(store, model, sess.URL())
+					updatePaneTitle(pane, sess)
 				}
 			case ui.ActionBack, ui.ActionForward, ui.ActionReload:
 				if runNavigation(sess, model, action, *load) {
 					recordVisit(store, model, sess.URL())
+					updatePaneTitle(pane, sess)
 				}
 			case ui.ActionShowHints:
 				hints, err := sess.Hints(sess.Context(), 49)
@@ -182,6 +189,7 @@ func main() {
 			case ui.ActionOverlaySelect:
 				if runNavigation(sess, model, ui.Action{Kind: ui.ActionNavigate, URL: action.URL}, *load) {
 					recordVisit(store, model, sess.URL())
+					updatePaneTitle(pane, sess)
 				}
 			case ui.ActionOverlayClose:
 				model.CloseOverlay()
@@ -223,6 +231,15 @@ func recordVisit(store *history.Store, model *ui.Model, url string) {
 
 func refreshLists(model *ui.Model, store *history.Store) {
 	model.SetLists(store.History(), store.Bookmarks())
+}
+
+func updatePaneTitle(pane *tuios.Pane, sess *browser.Session) {
+	if !pane.Enabled() {
+		return
+	}
+	if title, err := sess.Title(sess.Context()); err == nil && title != "" {
+		pane.Rename(title)
+	}
 }
 
 func handleMouse(sess *browser.Session, geom term.Geometry, m term.MouseEvent) {
