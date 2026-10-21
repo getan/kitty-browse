@@ -3,8 +3,9 @@
 A small Go terminal browser: real Chromium pixels in Kitty/iTerm2/Sixel
 terminals, without the Electron/Rust stack.
 
-> Status: early scaffold. It loads a page and streams it to the terminal; the
-> TUI, mouse mapping, hint mode, history and tabs are the next layers.
+> Status: functional prototype. Address bar, mouse, hints, history/bookmarks,
+> text fallback and optional tuios title reporting are implemented; tabs and
+> richer page controls are future work.
 
 ## How it works
 
@@ -82,15 +83,13 @@ Useful flags:
 
 ## Design notes
 
-`termcast` is a display transport, not a browser UI. It clears the terminal for
-each new frame and sends JPEG frames at a bounded rate. A production TUI should
-fork or wrap it to:
+`termcast` is a display transport, not a browser UI. This project's renderer
+keeps the address bar on row 1 and the help/status line on the last row:
 
-1. render into a reserved terminal region;
-2. use the terminal's real pixel size (`CSI 14t`) instead of the default
-   1024×768 cap;
-3. switch to a high-quality still frame when the page is idle;
-4. map terminal mouse coordinates through device scale factor and browser zoom.
+1. it uses the terminal's real pixel size (`CSI 14t`/`16t`) when available;
+2. it switches to a lossless PNG still frame when the page is idle;
+3. it maps terminal mouse coordinates through the measured cell size;
+4. it redraws only the page region, leaving both chrome rows intact.
 
 ## tuios integration
 
