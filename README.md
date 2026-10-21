@@ -53,6 +53,7 @@ go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 | `H` | history picker (`j`/`k`, Enter) |
 | `B` | bookmarks picker |
 | `b` | toggle bookmark for the current page |
+| `t` | toggle readable text mode |
 | mouse click | left-click the page |
 | mouse wheel | scroll the page |
 
@@ -76,7 +77,7 @@ Useful flags:
 - [x] History and bookmarks
 - [x] Region rendering so a TUI can keep its own chrome
 - [x] Idle PNG still frames, JPEG while the page is moving
-- [ ] Text extraction fallback for copy/readability
+- [x] Text extraction fallback for copy/readability
 - [ ] Optional `tuios` pane integration
 
 ## Design notes

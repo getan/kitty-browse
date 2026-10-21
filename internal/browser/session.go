@@ -130,6 +130,16 @@ func (s *Session) Scroll(x, y, deltaY float64) error {
 	}))
 }
 
+// Text returns the rendered page's innerText. It is the readable fallback when
+// a page is unreadable as pixels or the user needs selectable text.
+func (s *Session) Text(ctx context.Context) (string, error) {
+	out, err := chromedp.Run(ctx, chromedp.Evaluate[string](`document.body ? document.body.innerText : ""`))
+	if err != nil {
+		return "", fmt.Errorf("extract text: %w", err)
+	}
+	return out, nil
+}
+
 // History returns the owned history and the current index.
 func (s *Session) History() ([]string, int) {
 	return append([]string(nil), s.history...), s.index

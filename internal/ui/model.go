@@ -26,6 +26,8 @@ const (
 	ActionToggleBookmark
 	ActionOverlaySelect
 	ActionOverlayClose
+	ActionToggleText
+	ActionTextScroll
 	ActionQuit
 )
 
@@ -52,6 +54,10 @@ type Model struct {
 	OverlayIndex int
 	HistoryURLs  []string
 	BookmarkURLs []string
+
+	TextMode  bool
+	TextLines []string
+	TextTop   int
 }
 
 // OverlayKind selects the one-line picker.
@@ -88,6 +94,9 @@ func (m *Model) Header() string {
 			return name + ": empty (Esc)"
 		}
 		return fmt.Sprintf("%s %d/%d: %s", name, m.OverlayIndex+1, len(m.OverlayItems), m.OverlayItems[m.OverlayIndex])
+	}
+	if m.TextMode {
+		return "text: " + m.URL
 	}
 	line := m.URL
 	if m.Status != "" {
@@ -187,6 +196,35 @@ func (m *Model) Handle(ev term.Event) Action {
 		return Action{}
 	}
 
+	if m.TextMode {
+		switch ev.Kind {
+		case term.KeyEscape, term.KeyText:
+			if ev.Kind == term.KeyEscape || ev.Rune == 't' || ev.Rune == 'q' {
+				m.TextMode = false
+				m.TextLines = nil
+				m.TextTop = 0
+				return Action{Kind: ActionToggleText}
+			}
+			if ev.Rune == 'j' {
+				m.TextTop++
+				return Action{Kind: ActionTextScroll}
+			}
+			if ev.Rune == 'k' && m.TextTop > 0 {
+				m.TextTop--
+				return Action{Kind: ActionTextScroll}
+			}
+		case term.KeyDown:
+			m.TextTop++
+			return Action{Kind: ActionTextScroll}
+		case term.KeyUp:
+			if m.TextTop > 0 {
+				m.TextTop--
+			}
+			return Action{Kind: ActionTextScroll}
+		}
+		return Action{}
+	}
+
 	if ev.Kind == term.KeyAltF {
 		if m.HintMode {
 			m.HintMode = false
@@ -269,6 +307,8 @@ func (m *Model) Handle(ev term.Event) Action {
 			return Action{Kind: ActionOpenBookmarks}
 		case 'b':
 			return Action{Kind: ActionToggleBookmark, URL: m.URL}
+		case 't':
+			return Action{Kind: ActionToggleText}
 		}
 	}
 	return Action{}
@@ -312,6 +352,33 @@ func (m *Model) CloseOverlay() {
 	m.Overlay = OverlayNone
 	m.OverlayItems = nil
 	m.OverlayIndex = 0
+}
+
+// SetText installs the extracted page text and enters text mode.
+func (m *Model) SetText(text string) {
+	m.TextLines = strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	m.TextTop = 0
+	m.TextMode = true
+}
+
+// TextView returns the visible window of extracted text.
+func (m *Model) TextView(rows, width int) []string {
+	if !m.TextMode || rows <= 0 {
+		return nil
+	}
+	if m.TextTop > len(m.TextLines)-1 {
+		m.TextTop = max(len(m.TextLines)-1, 0)
+	}
+	end := min(m.TextTop+rows, len(m.TextLines))
+	out := make([]string, 0, end-m.TextTop)
+	for _, line := range m.TextLines[m.TextTop:end] {
+		r := []rune(line)
+		if width > 0 && len(r) > width {
+			r = r[:width]
+		}
+		out = append(out, string(r))
+	}
+	return out
 }
 
 // AddressTrimmed returns the address without surrounding whitespace.

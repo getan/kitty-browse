@@ -116,3 +116,18 @@ func TestFooterMentionsBookmark(t *testing.T) {
 		t.Fatalf("footer = %q", got)
 	}
 }
+
+func TestTextMode(t *testing.T) {
+	m := New("https://example.com")
+	if a := m.Handle(term.Event{Kind: term.KeyText, Rune: 't'}); a.Kind != ActionToggleText {
+		t.Fatalf("toggle = %+v", a)
+	}
+	m.SetText("one\ntwo\nthree")
+	if got := m.TextView(2, 80); len(got) != 2 || got[0] != "one" {
+		t.Fatalf("view = %v", got)
+	}
+	m.Handle(term.Event{Kind: term.KeyText, Rune: 'j'})
+	if got := m.TextView(2, 80); got[0] != "two" {
+		t.Fatalf("scroll = %v", got)
+	}
+}

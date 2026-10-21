@@ -129,6 +129,23 @@ func (s *Screen) ClearBody() {
 	_, _ = io.WriteString(s.out, "\x1b[2;1H\x1b[J")
 }
 
+// Text clears the page area and writes plain text lines. The caller keeps the
+// footer in sync.
+func (s *Screen) Text(lines []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := io.WriteString(s.out, "\x1b[2;1H\x1b[J"); err != nil {
+		return
+	}
+	cols := s.cols
+	if cols < 1 {
+		cols = 1
+	}
+	for i := 0; i < s.rows-2 && i < len(lines); i++ {
+		_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", i+2, truncate(lines[i], cols))
+	}
+}
+
 func truncate(s string, cols int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")

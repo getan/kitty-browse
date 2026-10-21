@@ -107,6 +107,7 @@ func main() {
 	tick := time.NewTicker(time.Second / time.Duration(max(int(*fps), 1)))
 	defer tick.Stop()
 	var pending image.Image
+	var lastImage image.Image
 	var lastStill time.Time
 
 	for {
@@ -119,14 +120,19 @@ func main() {
 			_ = sess.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx)
 			drawChrome(screen, model, store)
 		case <-tick.C:
+			if model.TextMode {
+				continue
+			}
 			if pending != nil {
 				drawFrame(screen, stream, pending, model, store)
+				lastImage = pending
 				pending = nil
 			} else if last := stream.LastFrame(); !last.IsZero() &&
 				time.Since(last) > 400*time.Millisecond &&
 				time.Since(lastStill) > 2*time.Second {
 				if img, err := stream.Still(ctx); err == nil {
 					drawFrame(screen, stream, img, model, store)
+					lastImage = img
 					lastStill = time.Now()
 				}
 			}
@@ -179,10 +185,18 @@ func main() {
 				}
 			case ui.ActionOverlayClose:
 				model.CloseOverlay()
+			case ui.ActionToggleText:
+				handleText(screen, stream, model, store, sess, rows, cols, lastImage)
+			case ui.ActionTextScroll:
+				screen.Text(model.TextView(max(rows-2, 1), cols))
+				drawChrome(screen, model, store)
 			}
 			drawChrome(screen, model, store)
 		case img := <-stream.Frames():
-			pending = img
+			lastImage = img
+			if !model.TextMode {
+				pending = img
+			}
 		}
 	}
 }
@@ -274,4 +288,22 @@ func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image, mode
 func drawChrome(screen *term.Screen, model *ui.Model, store *history.Store) {
 	screen.Header(model.Header())
 	screen.Footer(model.Footer(store.IsBookmarked(model.URL)))
+}
+
+func handleText(screen *term.Screen, stream *render.Stream, model *ui.Model, store *history.Store,
+	sess *browser.Session, rows, cols int, last image.Image) {
+	if !model.TextMode {
+		if last != nil {
+			drawFrame(screen, stream, last, model, store)
+		}
+		return
+	}
+	text, err := sess.Text(sess.Context())
+	if err != nil {
+		model.Status = err.Error()
+		model.TextMode = false
+		return
+	}
+	model.SetText(text)
+	screen.Text(model.TextView(max(rows-2, 1), cols))
 }
