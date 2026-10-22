@@ -45,7 +45,7 @@ go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 |---|---|
 | `Ctrl+L` / `l` | edit the address bar |
 | `Enter` | navigate to the address |
-| `Esc` | cancel editing, or quit while browsing |
+| `Esc` | cancel editing / hint / picker |
 | `Alt+Left` / `Left` | back |
 | `Alt+Right` / `Right` | forward |
 | `Ctrl+R` / `r` | reload |
@@ -66,6 +66,7 @@ Useful flags:
 -width      maximum frame width in pixels
 -height     maximum frame height in pixels
 -load-timeout page load timeout (default 30s)
+-measure-cells query CSI 14t/16t for exact cell pixels (may leave terminal replies)
 ```
 
 ## Roadmap

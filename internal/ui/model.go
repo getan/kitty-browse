@@ -282,8 +282,6 @@ func (m *Model) Handle(ev term.Event) Action {
 		return Action{Kind: ActionBack}
 	case term.KeyAltRight, term.KeyRight:
 		return Action{Kind: ActionForward}
-	case term.KeyEscape:
-		return Action{Kind: ActionQuit}
 	case term.KeyText:
 		switch ev.Rune {
 		case 'q':

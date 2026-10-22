@@ -43,7 +43,7 @@ type CellPixels struct {
 // QueryCellPixels asks the terminal for its text-area and cell size. It is
 // best-effort: a terminal that does not answer gets the 8x16 fallback.
 func QueryCellPixels(in *os.File, out interface{ Write([]byte) (int, error) }, rows, cols int) CellPixels {
-	fallback := CellPixels{WidthPx: cols * 8, HeightPx: rows * 16, CellW: 8, CellH: 16}
+	fallback := FallbackCellPixels(rows, cols)
 	if in == nil || out == nil || rows <= 0 || cols <= 0 {
 		return fallback
 	}
@@ -52,12 +52,25 @@ func QueryCellPixels(in *os.File, out interface{ Write([]byte) (int, error) }, r
 		return fallback
 	}
 	buf := make([]byte, 256)
-	n, err := in.Read(buf)
+	var data []byte
+	deadline := time.Now().Add(350 * time.Millisecond)
+	for {
+		_ = in.SetReadDeadline(deadline)
+		n, err := in.Read(buf)
+		if n > 0 {
+			data = append(data, buf[:n]...)
+			deadline = time.Now().Add(60 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			break
+		}
+	}
 	_ = in.SetReadDeadline(time.Time{})
-	if err != nil || n == 0 {
+	if len(data) == 0 {
 		return fallback
 	}
-	p, ok := ParseCellPixels(string(buf[:n]))
+	p, ok := ParseCellPixels(string(data))
 	if !ok {
 		return fallback
 	}
@@ -65,6 +78,12 @@ func QueryCellPixels(in *os.File, out interface{ Write([]byte) (int, error) }, r
 		p.CellW, p.CellH = 8, 16
 	}
 	return p
+}
+
+// FallbackCellPixels is the 8x16 estimate used when the terminal is not
+// queried or does not answer.
+func FallbackCellPixels(rows, cols int) CellPixels {
+	return CellPixels{WidthPx: cols * 8, HeightPx: rows * 16, CellW: 8, CellH: 16}
 }
 
 var csiPixelRE = regexp.MustCompile(`\x1b\[(?:4|6);(\d+);(\d+)t`)

@@ -35,6 +35,14 @@ func Open(parent context.Context, target string, timeout time.Duration) (*Sessio
 	ctx, cancel := chromedp.NewContext(parent)
 	s := &Session{ctx: ctx, cancel: cancel, url: target, history: []string{target}}
 
+	// The first chromedp.Run binds Chromium's lifetime to its context. Start
+	// the browser with the persistent session context; load() uses a child
+	// context with a timeout for navigation only. Using loadCtx for the first
+	// Run cancels Chromium as soon as the load timeout context is released.
+	if err := chromedp.Do(ctx); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("start browser: %w", err)
+	}
 	if err := s.load(target, timeout); err != nil {
 		s.Close()
 		return nil, err

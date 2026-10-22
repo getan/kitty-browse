@@ -61,6 +61,13 @@ func TestNavigationKeys(t *testing.T) {
 	}
 }
 
+func TestBrowseEscapeDoesNotQuit(t *testing.T) {
+	m := New("https://example.com")
+	if got := m.Handle(term.Event{Kind: term.KeyEscape}); got.Kind == ActionQuit {
+		t.Fatal("browse Esc must not quit; a stray terminal reply would close the browser")
+	}
+}
+
 func TestHintModeSelectsLabel(t *testing.T) {
 	m := New("https://example.com")
 	if a := m.Handle(term.Event{Kind: term.KeyAltF}); a.Kind != ActionShowHints {

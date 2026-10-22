@@ -25,6 +25,14 @@ import (
 	"github.com/getan/kitty-browse/internal/ui"
 )
 
+var debugLog *log.Logger
+
+func debugf(format string, args ...any) {
+	if debugLog != nil {
+		debugLog.Printf(format, args...)
+	}
+}
+
 func main() {
 	var (
 		fps       = flag.Float64("fps", 8, "maximum frames per second")
@@ -32,12 +40,21 @@ func main() {
 		maxWidth  = flag.Int("width", 0, "maximum frame width in pixels; 0 sizes to the pane")
 		maxHeight = flag.Int("height", 0, "maximum frame height in pixels; 0 sizes to the pane")
 		load      = flag.Duration("load-timeout", 30*time.Second, "page load timeout")
+		measure   = flag.Bool("measure-cells", false, "query CSI 14t/16t for exact cell pixel size")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] [url]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if path := os.Getenv("KITTY_BROWSE_DEBUG"); path != "" {
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+			debugLog = log.New(f, "", log.Lmicroseconds)
+			defer f.Close()
+		}
+	}
+	debugf("start target=%q", flag.Arg(0))
 
 	target := strings.TrimSpace(flag.Arg(0))
 	if target == "" {
@@ -52,6 +69,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer sess.Close()
+	debugf("browser open url=%s", sess.URL())
 
 	pane := tuios.FromEnv(nil)
 	defer pane.Clear()
@@ -68,10 +86,15 @@ func main() {
 		log.Fatal(err)
 	}
 	defer screen.Close()
+	debugf("screen open")
 
 	rows, cols := screen.Size()
 	width, height := *maxWidth, *maxHeight
-	pixels := term.QueryCellPixels(os.Stdin, os.Stdout, rows, cols)
+	pixels := term.FallbackCellPixels(rows, cols)
+	if *measure {
+		pixels = term.QueryCellPixels(os.Stdin, os.Stdout, rows, cols)
+	}
+	debugf("cell pixels=%+v", pixels)
 	geom := term.GeometryFor(rows, cols, pixels)
 	if width <= 0 {
 		width = geom.ContentWidthPx
@@ -80,16 +103,20 @@ func main() {
 		height = geom.ContentHeightPx
 	}
 	geom.ContentWidthPx, geom.ContentHeightPx = width, height
+	debugf("viewport %dx%d geometry=%+v", width, height, geom)
 	if err := sess.SetViewport(width, height); err != nil {
+		debugf("set viewport error: %v", err)
 		screen.Header("kitty-browse: viewport: " + err.Error())
 		time.Sleep(2 * time.Second)
 		return
 	}
+	debugf("viewport set")
 
 	stream, err := render.Start(sess.Context(), render.Config{
 		FPS: *fps, Quality: *quality, Width: width, Height: height,
 	})
 	if err != nil {
+		debugf("render start error: %v", err)
 		screen.Header("kitty-browse: " + err.Error())
 		time.Sleep(2 * time.Second)
 		screen.Close()
@@ -99,6 +126,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer stream.Stop()
+	debugf("render started")
 
 	model := ui.New(sess.URL())
 	refreshLists(model, store)
@@ -119,6 +147,7 @@ func main() {
 	for {
 		select {
 		case <-ctx.Done():
+			debugf("ctx done")
 			return
 		case <-resize:
 			rows, cols = screen.Refresh()
@@ -143,13 +172,16 @@ func main() {
 				}
 			}
 		case ev := <-events:
+			debugf("event kind=%d rune=%q mouse=%+v", ev.Kind, ev.Rune, ev.Mouse)
 			if ev.Kind == term.KeyMouse {
 				handleMouse(sess, geom, ev.Mouse)
 				continue
 			}
 			action := model.Handle(ev)
+			debugf("action kind=%d url=%s label=%s", action.Kind, action.URL, action.Label)
 			switch action.Kind {
 			case ui.ActionQuit:
+				debugf("quit action")
 				return
 			case ui.ActionNavigate:
 				if runNavigation(sess, model, action, *load) {
@@ -261,8 +293,10 @@ func readInput(in *os.File, events chan<- term.Event) {
 	for {
 		ev, err := term.ReadEvent(r)
 		if err != nil {
+			debugf("input error: %v", err)
 			return
 		}
+		debugf("raw event kind=%d rune=%q", ev.Kind, ev.Rune)
 		events <- ev
 	}
 }
