@@ -15,7 +15,9 @@ import (
 	"image/png"
 	"io"
 	"iter"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -38,6 +40,41 @@ type Config struct {
 	Encoder rasterm.Encoder
 }
 
+const (
+	defaultFPS = 24
+	minFPS     = 0.1
+	maxFPS     = 240
+)
+
+// Stats is a snapshot of the screencast pipeline counters. Dropped includes
+// raw frames superseded before decoding, filtered frames, and decoded frames
+// superseded before the consumer received them.
+type Stats struct {
+	Received    uint64
+	Acked       uint64
+	Decoded     uint64
+	Dropped     uint64
+	Published   uint64
+	DecodeTotal time.Duration
+	DecodeLast  time.Duration
+	Drawn       uint64
+	WireBytes   uint64
+	DrawTotal   time.Duration
+	DrawLast    time.Duration
+}
+
+type streamStats struct {
+	received, acked, decoded, dropped, published atomic.Uint64
+	decodeTotal, decodeLast                      atomic.Int64
+	drawn, wireBytes                             atomic.Uint64
+	drawTotal, drawLast                          atomic.Int64
+}
+
+type rawFrame struct {
+	data    []byte
+	arrived time.Time
+}
+
 // Stream is a running CDP screencast. Frames contains the latest decoded
 // viewport; the consumer can drop frames it cannot draw yet.
 type Stream struct {
@@ -46,9 +83,13 @@ type Stream struct {
 	enc    rasterm.Encoder
 	kitty  *kittyEncoder
 	frames chan image.Image
+	raw    chan rawFrame
+	fps    float64
+	stats  streamStats
 
 	wg      sync.WaitGroup
 	mu      sync.Mutex
+	encMu   sync.Mutex // Never block capture/decode bookkeeping on a terminal write.
 	err     error
 	last    time.Time
 	stopped bool
@@ -58,8 +99,9 @@ type Stream struct {
 
 // Start begins a screencast and starts Chromium if the context has none.
 func Start(ctx context.Context, cfg Config) (*Stream, error) {
-	if cfg.FPS <= 0 {
-		cfg.FPS = 8
+	var err error
+	if cfg.FPS, err = normalizeFPS(cfg.FPS); err != nil {
+		return nil, err
 	}
 	if cfg.Quality < 0 || cfg.Quality > 100 {
 		return nil, fmt.Errorf("quality must be 0..100")
@@ -100,11 +142,22 @@ func Start(ctx context.Context, cfg Config) (*Stream, error) {
 
 	s := &Stream{
 		ctx: ctx, cancel: cancel, enc: cfg.Encoder, kitty: kitty, frames: make(chan image.Image, 1),
-		width: cfg.Width, height: cfg.Height,
+		raw: make(chan rawFrame, 1), fps: cfg.FPS, width: cfg.Width, height: cfg.Height,
 	}
-	s.wg.Add(1)
-	go s.read(rctx, frames)
+	s.wg.Add(2)
+	go s.receive(rctx, frames)
+	go s.decode(rctx)
 	return s, nil
+}
+
+func normalizeFPS(fps float64) (float64, error) {
+	if fps == 0 {
+		return defaultFPS, nil
+	}
+	if fps < minFPS || math.IsNaN(fps) || math.IsInf(fps, 0) || fps > maxFPS {
+		return 0, fmt.Errorf("fps must be between %.1f and %d", minFPS, maxFPS)
+	}
+	return fps, nil
 }
 
 // Frames returns latest-frame notifications. It is never closed; stop by
@@ -132,11 +185,11 @@ func (s *Stream) SetCellSize(cols, rows int) {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
+	s.encMu.Lock()
 	if s.kitty != nil {
 		s.kitty.Cols, s.kitty.Rows = cols, rows
 	}
-	s.mu.Unlock()
+	s.encMu.Unlock()
 }
 
 func (s *Stream) matchesViewport(width, height int) bool {
@@ -151,9 +204,30 @@ func (s *Stream) Draw(w io.Writer, img image.Image) error {
 	if s == nil || img == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.enc.Encode(w, img)
+	s.encMu.Lock()
+	defer s.encMu.Unlock()
+	started := time.Now()
+	out := frameWriter{Writer: w}
+	err := s.enc.Encode(&out, img)
+	elapsed := time.Since(started)
+	s.stats.drawLast.Store(int64(elapsed))
+	s.stats.drawTotal.Add(int64(elapsed))
+	s.stats.wireBytes.Add(uint64(out.bytes))
+	if err == nil {
+		s.stats.drawn.Add(1)
+	}
+	return err
+}
+
+type frameWriter struct {
+	io.Writer
+	bytes int
+}
+
+func (w *frameWriter) Write(data []byte) (int, error) {
+	n, err := w.Writer.Write(data)
+	w.bytes += n
+	return n, err
 }
 
 // Clear removes only this browser's Kitty image, for mode changes and exit.
@@ -182,6 +256,23 @@ func (s *Stream) LastFrame() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.last
+}
+
+// Stats returns a race-free snapshot of pipeline activity.
+func (s *Stream) Stats() Stats {
+	if s == nil {
+		return Stats{}
+	}
+	return Stats{
+		Received: s.stats.received.Load(), Acked: s.stats.acked.Load(),
+		Decoded: s.stats.decoded.Load(), Dropped: s.stats.dropped.Load(),
+		Published:   s.stats.published.Load(),
+		DecodeTotal: time.Duration(s.stats.decodeTotal.Load()),
+		DecodeLast:  time.Duration(s.stats.decodeLast.Load()),
+		Drawn:       s.stats.drawn.Load(), WireBytes: s.stats.wireBytes.Load(),
+		DrawTotal: time.Duration(s.stats.drawTotal.Load()),
+		DrawLast:  time.Duration(s.stats.drawLast.Load()),
+	}
 }
 
 // Still captures a lossless PNG of the current viewport. It is used after the
@@ -233,10 +324,9 @@ func (s *Stream) Stop() {
 	}
 }
 
-func (s *Stream) read(ctx context.Context, frames iter.Seq2[page.EventScreencastFrame, error]) {
+func (s *Stream) receive(ctx context.Context, frames iter.Seq2[page.EventScreencastFrame, error]) {
 	defer s.wg.Done()
-	var previous [sha256.Size]byte
-	var havePrevious bool
+	defer close(s.raw)
 	for ev, err := range frames {
 		if err != nil {
 			if ctx.Err() == nil {
@@ -244,6 +334,7 @@ func (s *Stream) read(ctx context.Context, frames iter.Seq2[page.EventScreencast
 			}
 			return
 		}
+		s.stats.received.Add(1)
 		if _, err := chromedp.Call(ctx, page.ScreencastFrameAck, page.ScreencastFrameAckParams{
 			SessionID: ev.SessionID,
 		}); err != nil {
@@ -252,30 +343,111 @@ func (s *Stream) read(ctx context.Context, frames iter.Seq2[page.EventScreencast
 			}
 			return
 		}
-		// Always ACK, even duplicate frames. CaptureScreenshot can cause an
-		// otherwise idle compositor to send the exact same JPEG again.
-		digest := sha256.Sum256(ev.Data)
+		s.stats.acked.Add(1)
+		// ACK before doing any image work. offerRaw is non-blocking and retains
+		// only the newest JPEG while the decoder is busy or rate limited.
+		s.offerRaw(ctx, rawFrame{data: ev.Data, arrived: time.Now()})
+	}
+}
+
+func (s *Stream) decode(ctx context.Context) {
+	defer s.wg.Done()
+	interval := time.Duration(float64(time.Second) / s.fps)
+	var previous [sha256.Size]byte
+	var havePrevious bool
+	var next time.Time
+	raw := s.raw
+	for {
+		if raw == nil {
+			return
+		}
+		var frame rawFrame
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return
+		case frame, ok = <-raw:
+		}
+		if !ok {
+			return
+		}
+		if wait := time.Until(next); wait > 0 {
+			timer := time.NewTimer(wait)
+		waiting:
+			for {
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case newer, open := <-raw:
+					if open {
+						frame = newer
+						s.stats.dropped.Add(1)
+					} else {
+						raw = nil
+					}
+				case <-timer.C:
+					break waiting
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		started := time.Now()
+		next = started.Add(interval)
+		digest := sha256.Sum256(frame.data)
 		if havePrevious && digest == previous {
+			s.stats.dropped.Add(1)
 			continue
 		}
-		size, err := jpeg.DecodeConfig(bytes.NewReader(ev.Data))
+		size, err := jpeg.DecodeConfig(bytes.NewReader(frame.data))
 		if err != nil {
 			s.fail(fmt.Errorf("decode frame header: %w", err))
+			s.stats.dropped.Add(1)
 			continue
 		}
 		if !s.matchesViewport(size.Width, size.Height) {
+			s.stats.dropped.Add(1)
 			continue
 		}
-		img, err := jpeg.Decode(bytes.NewReader(ev.Data))
+		img, err := jpeg.Decode(bytes.NewReader(frame.data))
 		if err != nil {
 			s.fail(fmt.Errorf("decode frame: %w", err))
+			s.stats.dropped.Add(1)
 			continue
 		}
+		elapsed := time.Since(started)
+		s.stats.decoded.Add(1)
+		s.stats.decodeLast.Store(int64(elapsed))
+		s.stats.decodeTotal.Add(int64(elapsed))
 		previous, havePrevious = digest, true
 		s.mu.Lock()
-		s.last = time.Now()
+		s.last = frame.arrived
 		s.mu.Unlock()
 		s.publish(ctx, img)
+		if raw == nil {
+			return
+		}
+	}
+}
+
+func (s *Stream) offerRaw(ctx context.Context, frame rawFrame) {
+	for {
+		select {
+		case s.raw <- frame:
+			return
+		case <-ctx.Done():
+			return
+		default:
+			select {
+			case <-s.raw:
+				s.stats.dropped.Add(1)
+			default:
+			}
+		}
 	}
 }
 
@@ -283,12 +455,14 @@ func (s *Stream) publish(ctx context.Context, img image.Image) {
 	for {
 		select {
 		case s.frames <- img:
+			s.stats.published.Add(1)
 			return
 		case <-ctx.Done():
 			return
 		default:
 			select {
 			case <-s.frames:
+				s.stats.dropped.Add(1)
 			default:
 			}
 		}

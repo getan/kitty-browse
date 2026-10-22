@@ -1,9 +1,12 @@
 package main
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/getan/kitty-browse/internal/term"
+	"github.com/getan/kitty-browse/internal/ui"
 )
 
 func TestPanePixelsAndCustomResolution(t *testing.T) {
@@ -19,5 +22,31 @@ func TestPanePixelsAndCustomResolution(t *testing.T) {
 	}
 	if _, _, ok := g.CellToPixel(20, 53); ok {
 		t.Fatal("footer must not click through to webpage")
+	}
+}
+
+func TestFractionalFrameCadenceAndScrollGain(t *testing.T) {
+	fractionalFPS := 23.976
+	if got, err := frameInterval(fractionalFPS); err != nil || got != time.Duration(float64(time.Second)/fractionalFPS) {
+		t.Fatalf("fractional cadence = %v, %v", got, err)
+	}
+	for _, fps := range []float64{0, -1, math.NaN(), math.Inf(1), 241} {
+		if _, err := frameInterval(fps); err == nil {
+			t.Fatalf("invalid fps accepted: %v", fps)
+		}
+	}
+	for _, lines := range []float64{0, -1, math.NaN(), math.Inf(1), 101} {
+		if validScrollLines(lines) {
+			t.Fatalf("invalid scroll gain accepted: %v", lines)
+		}
+	}
+	g := paneGeometry(53, 107, term.CellPixels{CellW: 8, CellH: 18}, 0, 0)
+	if got := scrollPixels(g, -10, 2); got != -360 {
+		t.Fatalf("coalesced wheel gain = %v, want -360", got)
+	}
+	for _, kind := range []ui.ActionKind{ui.ActionNewTab, ui.ActionSelectTab, ui.ActionCloseTab, ui.ActionNavigate, ui.ActionReload} {
+		if !interruptsScroll(kind) {
+			t.Fatalf("target-changing action %v must discard old movement", kind)
+		}
 	}
 }

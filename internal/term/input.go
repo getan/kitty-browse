@@ -48,6 +48,7 @@ type MouseEvent struct {
 	Press  bool
 	Motion bool
 	Wheel  int // -1 up, 1 down, 0 not a wheel
+	WheelX int // -1 left, 1 right; never reinterpret sideways touchpad drift as vertical
 }
 
 // ReadEvent reads one key. Escape sequences are recognized; a lone ESC is
@@ -174,10 +175,14 @@ func parseMouse(seq string) (Event, bool) {
 	}
 	m := MouseEvent{Button: b & 3, Col: x, Row: y, Press: press, Motion: b&32 != 0}
 	if b&64 != 0 {
+		direction := -1
 		if b&1 != 0 {
-			m.Wheel = 1
+			direction = 1
+		}
+		if b&2 != 0 {
+			m.WheelX = direction
 		} else {
-			m.Wheel = -1
+			m.Wheel = direction
 		}
 	}
 	return Event{Kind: KeyMouse, Mouse: m}, true

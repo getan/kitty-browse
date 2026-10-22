@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/getan/kitty-browse/internal/browser"
@@ -64,4 +66,30 @@ func syncTabChrome(model *ui.Model, tabs *browser.Tabs, titles map[*browser.Sess
 	if active := tabs.Active(); active != nil {
 		model.CanGoBack, model.CanGoForward = active.CanBack(), active.CanForward()
 	}
+}
+
+func frameInterval(fps float64) (time.Duration, error) {
+	if math.IsNaN(fps) || math.IsInf(fps, 0) || fps < 0.1 || fps > 240 {
+		return 0, fmt.Errorf("fps must be finite and between 0.1 and 240")
+	}
+	return time.Duration(float64(time.Second) / fps), nil
+}
+
+func validScrollLines(lines float64) bool {
+	return !math.IsNaN(lines) && !math.IsInf(lines, 0) && lines >= 0.1 && lines <= 100
+}
+
+func scrollPixels(g term.Geometry, steps int, lines float64) float64 {
+	return float64(steps) * float64(g.ContentHeightPx) / float64(max(g.ContentRows, 1)) * lines
+}
+
+func interruptsScroll(kind ui.ActionKind) bool {
+	switch kind {
+	case ui.ActionNavigate, ui.ActionBack, ui.ActionForward, ui.ActionReload,
+		ui.ActionNewTab, ui.ActionSelectTab, ui.ActionCloseTab, ui.ActionOverlaySelect,
+		ui.ActionToggleText, ui.ActionShowHints, ui.ActionHint,
+		ui.ActionScreenshot, ui.ActionScreenshotFull, ui.ActionQuit:
+		return true
+	}
+	return false
 }

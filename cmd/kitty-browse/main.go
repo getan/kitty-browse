@@ -44,21 +44,27 @@ func main() {
 		return
 	}
 	var (
-		fps       = flag.Float64("fps", 8, "maximum frames per second")
-		quality   = flag.Int("quality", 85, "JPEG quality, 0-100")
-		maxWidth  = flag.Int("width", 0, "maximum frame width in pixels; 0 sizes to the pane")
-		maxHeight = flag.Int("height", 0, "maximum frame height in pixels; 0 sizes to the pane")
-		load      = flag.Duration("load-timeout", 30*time.Second, "page load timeout")
-		measure   = flag.Bool("measure-cells", true, "query cell pixel size asynchronously (disable with -measure-cells=false)")
-		chrome    = flag.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
-		socket    = flag.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional Unix socket for screenshots of this running browser")
-		shotDir   = flag.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
+		fps         = flag.Float64("fps", 24, "maximum frames per second (0.1..240)")
+		scrollLines = flag.Float64("scroll-lines", 2, "terminal cell heights per wheel step (0.1..100)")
+		quality     = flag.Int("quality", 85, "JPEG quality, 0-100")
+		maxWidth    = flag.Int("width", 0, "maximum frame width in pixels; 0 sizes to the pane")
+		maxHeight   = flag.Int("height", 0, "maximum frame height in pixels; 0 sizes to the pane")
+		load        = flag.Duration("load-timeout", 30*time.Second, "page load timeout")
+		measure     = flag.Bool("measure-cells", true, "query cell pixel size asynchronously (disable with -measure-cells=false)")
+		chrome      = flag.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
+		socket      = flag.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional Unix socket for screenshots of this running browser")
+		shotDir     = flag.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] [url]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	interval, err := frameInterval(*fps)
+	if err != nil || !validScrollLines(*scrollLines) {
+		log.Fatal("fps must be finite and 0.1..240; scroll-lines must be finite and 0.1..100")
+	}
 
 	if path := os.Getenv("KITTY_BROWSE_DEBUG"); path != "" {
 		if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
@@ -158,27 +164,35 @@ func main() {
 	updatePaneTitle(pane, sess)
 	drawChrome(screen, model, store)
 
-	events := make(chan term.Event, 16)
-	go readInput(os.Stdin, events)
+	events := newInputQueue(64)
+	go readInput(ctx, os.Stdin, events)
 	if *measure {
 		screen.QueryPixels()
 	}
 	resize := make(chan os.Signal, 1)
 	signal.Notify(resize, syscall.SIGWINCH)
 	defer signal.Stop(resize)
-	tick := time.NewTicker(time.Second / time.Duration(max(int(*fps), 1)))
+	tick := time.NewTicker(min(interval, 100*time.Millisecond))
 	defer tick.Stop()
 	stateTick := time.NewTicker(time.Second)
 	defer stateTick.Stop()
-	var pending image.Image
 	var lastImage image.Image
 	var lastStill time.Time
 	var lastStillFor time.Time
 	var haveStill bool
 	var reportedRenderError bool
+	var reportedScrollError bool
 	var receivedFrames int
+	scroller := browser.NewScroller(sess.Context(), sess.ScrollContext)
+	defer func() { scroller.Stop() }()
+	resetScroller := func() {
+		scroller.Stop()
+		scroller = browser.NewScroller(sess.Context(), sess.ScrollContext)
+		reportedScrollError = false
+	}
 
 	applyViewport := func() {
+		scroller.Stop()
 		geom = paneGeometry(rows, cols, pixels, *maxWidth, *maxHeight)
 		stream.SetViewportSize(geom.ContentWidthPx, geom.ContentHeightPx)
 		stream.SetCellSize(cols, geom.ContentRows)
@@ -186,7 +200,7 @@ func main() {
 			model.Status = err.Error()
 			debugf("viewport error: %v", err)
 		}
-		pending = nil
+		resetScroller()
 		haveStill = false
 		debugf("updated geometry=%+v cell pixels=%+v", geom, pixels)
 		if model.TextMode {
@@ -206,7 +220,7 @@ func main() {
 			return err
 		}
 		stream = next
-		pending, lastImage = nil, nil
+		lastImage = nil
 		lastStill, lastStillFor = time.Time{}, time.Time{}
 		haveStill, reportedRenderError = false, false
 		receivedFrames = 0
@@ -233,6 +247,12 @@ func main() {
 				screen.QueryPixels()
 			}
 		case <-stateTick.C:
+			if debugLog != nil {
+				debugf("perf input=%+v scroll=%+v render=%+v", events.Stats(), scroller.Stats(), stream.Stats())
+			}
+			if scroller.Busy() || events.Stats().Pending != 0 {
+				continue // Don't compete with a gesture for CDP round trips.
+			}
 			oldTitle, oldBack, oldForward := titles[sess], model.CanGoBack, model.CanGoForward
 			if title, err := sess.Sync(ctx); err == nil {
 				titles[sess] = title
@@ -248,20 +268,22 @@ func main() {
 				}
 			}
 		case <-tick.C:
+			if err := scroller.Err(); err != nil && !reportedScrollError {
+				model.Status = err.Error()
+				debugf("scroll error: %v", err)
+				drawChrome(screen, model, store)
+				reportedScrollError = true
+			}
 			if err := stream.Err(); err != nil && !reportedRenderError {
 				debugf("render transport error: %v", err)
 				model.Status = err.Error()
 				drawChrome(screen, model, store)
 				reportedRenderError = true
 			}
-			if model.TextMode {
+			if model.TextMode || scroller.Busy() || events.Stats().Pending != 0 {
 				continue
 			}
-			if pending != nil {
-				drawFrame(screen, stream, pending, model, store)
-				lastImage = pending
-				pending = nil
-			} else if last := stream.LastFrame(); shouldCaptureStill(time.Now(), last, lastStill, lastStillFor, haveStill) {
+			if last := stream.LastFrame(); shouldCaptureStill(time.Now(), last, lastStill, lastStillFor, haveStill) {
 				// Also seed an initial frame when screencast produces no event.
 				// Throttle attempts on failure as well as success.
 				lastStill = time.Now()
@@ -276,7 +298,27 @@ func main() {
 					lastStillFor, haveStill = last, true
 				}
 			}
-		case ev := <-events:
+		case <-events.Ready():
+			ev, ok := events.Pop()
+			if !ok {
+				continue
+			}
+			if ev.Kind == term.KeyMouse && (ev.Mouse.Motion || !ev.Mouse.Press || ev.Mouse.WheelX != 0) {
+				continue
+			}
+			if ev.Kind == term.KeyMouse && ev.Mouse.Wheel != 0 {
+				x, y, inside := geom.CellToPixel(ev.Mouse.Col, ev.Mouse.Row)
+				if !inside {
+					continue
+				}
+				if model.TextMode {
+					model.TextTop = max(model.TextTop+ev.Mouse.Wheel*2, 0)
+					screen.Text(model.TextView(screen.BodyRows(), cols))
+				} else if model.Overlay == ui.OverlayNone {
+					scroller.Push(x, y, scrollPixels(geom, ev.Mouse.Wheel, *scrollLines))
+				}
+				continue // No synchronous CDP wait and no toolbar redraw per wheel.
+			}
 			debugf("event kind=%d rune=%q mouse=%+v", ev.Kind, ev.Rune, ev.Mouse)
 			if ev.Kind == term.KeyCellPixels {
 				if next := mergeCellPixels(pixels, ev.Pixels, rows, cols); next != pixels {
@@ -290,17 +332,22 @@ func main() {
 				if ev.Mouse.Row <= term.ChromeRows {
 					action = model.HandleMouse(cols, ev.Mouse)
 				} else {
+					scroller.Stop()
 					if err := handleMouse(sess, geom, ev.Mouse); err != nil {
 						model.Status = err.Error()
 						debugf("mouse error: %v", err)
+						drawChrome(screen, model, store)
 					}
-					drawChrome(screen, model, store)
+					resetScroller()
 					continue
 				}
 			} else {
 				action = model.Handle(ev)
 			}
 			debugf("action kind=%d url=%s label=%s", action.Kind, action.URL, action.Label)
+			if interruptsScroll(action.Kind) {
+				scroller.Stop()
+			}
 			switch action.Kind {
 			case ui.ActionQuit:
 				debugf("quit action")
@@ -395,6 +442,9 @@ func main() {
 				screen.Text(model.TextView(screen.BodyRows(), cols))
 				drawChrome(screen, model, store)
 			}
+			if interruptsScroll(action.Kind) {
+				resetScroller()
+			}
 			if action.Kind == ui.ActionNavigate || action.Kind == ui.ActionBack || action.Kind == ui.ActionForward || action.Kind == ui.ActionReload || action.Kind == ui.ActionOverlaySelect {
 				cacheTabTitle(titles, sess)
 			}
@@ -407,7 +457,9 @@ func main() {
 			}
 			lastImage = img
 			if !model.TextMode {
-				pending = img
+				// Decode is already frame-paced. Drawing here avoids an extra
+				// whole UI-ticker interval of latency after every captured frame.
+				drawFrame(screen, stream, img, model, store)
 			}
 		}
 	}
@@ -460,7 +512,7 @@ func handleMouse(sess *browser.Session, geom term.Geometry, m term.MouseEvent) e
 	return nil
 }
 
-func readInput(in *os.File, events chan<- term.Event) {
+func readInput(ctx context.Context, in *os.File, events *inputQueue) {
 	r := bufio.NewReaderSize(in, 4096)
 	for {
 		ev, err := term.ReadEvent(r)
@@ -468,8 +520,12 @@ func readInput(in *os.File, events chan<- term.Event) {
 			debugf("input error: %v", err)
 			return
 		}
-		debugf("raw event kind=%d rune=%q", ev.Kind, ev.Rune)
-		events <- ev
+		if ev.Kind == term.KeyText && ev.Rune == 0 {
+			continue
+		}
+		if !events.Push(ctx, ev) {
+			return
+		}
 	}
 }
 
@@ -507,8 +563,8 @@ func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image, mode
 		debugf("draw frame error: %v", err)
 		return
 	}
-	debugf("drawn frame %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
-	screen.Footer(model.Footer(store.IsBookmarked(model.URL)))
+	// The chrome stays unchanged during a frame update; writing it per frame
+	// needlessly makes tuios repaint terminal cells throughout a gesture.
 }
 
 func drawChrome(screen *term.Screen, model *ui.Model, store *history.Store) {

@@ -108,7 +108,8 @@ The top **two rows are mouse-clickable TUI controls**, not part of the webpage:
 Useful flags:
 
 ```text
--fps        maximum frames per second (default 8)
+-fps        maximum frames per second (default 24; supports fractional FPS)
+-scroll-lines cell heights per wheel step (default 2; use 1 for gentler touchpad movement)
 -quality    JPEG quality, 0-100 (default 85)
 -width      maximum frame width in pixels
 -height     maximum frame height in pixels
@@ -186,6 +187,48 @@ the body or delete the visible image before uploading its replacement. Identical
 screencast frames are ACKed but dropped, and an unchanged idle page is not
 periodically captured/redrawn. This avoids black flashes and JPEG/PNG cycling.
 
+### Scrolling and latency
+
+- Terminal input is bounded. Adjacent wheel reports are combined without
+  crossing keyboard/click boundaries; reversed input replaces an unsent old
+  direction tail. Horizontal touchpad drift is not treated as vertical input.
+- A cancellable, serial worker sends accumulated wheel movement roughly every
+  16ms, rather than blocking the UI on one CDP round trip per report. Changing
+  tabs, navigating, resizing or clicking cancels pending old-target movement.
+- CDP frames are ACKed independently of image decoding. Both raw and decoded
+  frame mailboxes keep only the latest frame; stale frames are discarded before
+  expensive decoding. Decoding is paced by `-fps`, and a final frame is retained.
+- Ready frames are drawn immediately, without waiting for a second UI ticker.
+  Scroll events do not redraw the toolbar. Idle PNG capture and title/history
+  polling yield while input is busy.
+- Opaque Kitty frames use lossless packed RGB with fast zlib compression
+  (`f=24,o=z`), reused buffers, and one write per frame. Transparent images fall
+  back to fast PNG. This avoids PNG re-encoding on the common scrolling path;
+  the screenshot command still saves PNG files as before.
+
+On the development Mac (Apple M1), the same 856x900 webpage screenshot measured
+about **18.8ms / 45 writes / 180,798 wire bytes** with the previous PNG transport,
+versus **5.3ms / 1 write / 149,101 wire bytes** with RGB+zlib. This is an encoding
+benchmark, not an end-to-end display FPS guarantee. Terminal/tuios throughput,
+viewport size and page complexity still limit the achieved frame rate.
+
+To tune movement independently of frame rate:
+
+```bash
+./bin/kitty-browse -fps 30 -scroll-lines 1 https://go.dev/
+```
+
+SGR mouse reports provide quantized wheel steps, not macOS's original precise
+touchpad pixel deltas. This improves response and removes queued work, but does
+not make terminal scrolling identical to a native 60/120Hz browser.
+
+For repeatable local encoding comparisons, first save a representative page PNG:
+
+```bash
+KITTY_BROWSE_BENCH_PNG="$PWD/.local/screenshots/viewport.png" \
+  go test ./internal/render -run '^$' -bench BenchmarkKittyEncode -benchmem
+```
+
 ## tuios integration
 
 When `kitty-browse` runs inside a tuios pane (`TUIOS_ENV=1` plus a pane id and
@@ -193,8 +236,8 @@ socket), it renames the pane to the current page title. This is cosmetic and
 best-effort: outside tuios, or when the `tuios` binary is unavailable, it is a
 no-op. Exiting restores the shell-derived pane name.
 
-Kitty frames use a first packet containing both the PNG header and explicit
-pixel dimensions. This avoids a rasterm v0.1.17 / tuios compatibility issue:
+Kitty frames use a first packet containing image data and explicit pixel
+dimensions. This avoids a rasterm v0.1.17 / tuios compatibility issue:
 an empty PNG first packet with no dimensions can upload the image but leave
 it with a zero-cell placement, making the page invisible.
 
@@ -206,8 +249,11 @@ KITTY_BROWSE_DEBUG="$PWD/.local/render.log" go run ./cmd/kitty-browse \
 ```
 
 Distinguish the layers when debugging: `first screencast frame` means Chromium
-produced pixels; `still frame` means PNG capture succeeded; `drawn frame` means
-the graphics bytes were written, **not** that the host displayed them.
+produced pixels; `still frame` means PNG capture succeeded. Once-per-second
+`perf` lines report input coalescing, pending/in-flight scroll movement, CDP
+calls, frames received/ACKed/decoded/dropped, terminal writes (`Drawn`) and
+`WireBytes`. `DrawLast`/`DrawTotal` include encoding and writing to the PTY;
+they do **not** measure when the host terminal actually displayed the pixels.
 `tuios capture-pane` and `tuios screenshot` capture character cells, not Kitty
 image pixels; a blank body in those captures is not evidence of missing frames.
 Check the visible pane for the blue test page and orange swatch.

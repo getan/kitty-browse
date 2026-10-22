@@ -64,3 +64,13 @@ func TestParsePixelResponsesAsCompleteEvents(t *testing.T) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
 }
+
+func TestHorizontalTouchpadDriftIsNotVerticalScroll(t *testing.T) {
+	got, err := Parse([]byte("\x1b[<66;10;15M\x1b[<67;10;15M\x1b[<65;10;15M"))
+	if err != nil || len(got) != 3 {
+		t.Fatalf("parse = %+v, %v", got, err)
+	}
+	if got[0].Mouse.Wheel != 0 || got[0].Mouse.WheelX != -1 || got[1].Mouse.Wheel != 0 || got[1].Mouse.WheelX != 1 || got[2].Mouse.Wheel != 1 {
+		t.Fatalf("horizontal reports became vertical: %+v", got)
+	}
+}
