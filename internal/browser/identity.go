@@ -16,8 +16,10 @@ const identityTimeout = 5 * time.Second
 
 // IdentityOptions controls the per-target browser identity override. Stealth is
 // deliberately narrow: it removes Chromium's simple headless user-agent marker
-// while retaining the browser's real version and platform. It is not a promise
-// to bypass bot detection, challenges, or other site security controls.
+// while retaining the browser's real version and platform. kitty-browse enables
+// it by default because sites routinely block the headless token outright; it is
+// still not a promise to bypass bot detection, challenges, or other site
+// security controls.
 type IdentityOptions struct {
 	Stealth   bool
 	UserAgent string

@@ -20,8 +20,9 @@ const (
 )
 
 // LaunchOptions controls the Chromium process created from the returned
-// allocator context. An empty UserAgent deliberately leaves Chromium's real
-// user agent unchanged.
+// allocator context. Stealth is on by default in kitty-browse, so the process UA
+// is the browser's real one with only the headless token removed. An empty
+// UserAgent lets that normalization happen; a non-empty one takes precedence.
 type LaunchOptions struct {
 	ExecutablePath string
 	ProfileDir     string

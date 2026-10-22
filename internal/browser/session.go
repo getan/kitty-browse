@@ -192,9 +192,126 @@ func (s *Session) SetViewport(width, height int) error {
 	return chromedp.Do(s.ctx, chromedp.EmulateViewport(int64(width), int64(height), chromedp.EmulateScale(1)))
 }
 
-// Click sends a left click at viewport CSS coordinates.
+// dispatchMouseEvent sends one raw Input.dispatchMouseEvent. chromedp's
+// MouseClickXY dispatches only a press and release, so the page's hover state
+// never sees the pointer before the click lands.
+var dispatchMouseEvent = cdp.Command[input.DispatchMouseEventParams, cdp.Empty]{Method: input.CommandDispatchMouseEvent}
+
+// dispatchKeyEvent sends one raw Input.dispatchKeyEvent.
+var dispatchKeyEvent = cdp.Command[input.DispatchKeyEventParams, cdp.Empty]{Method: input.CommandDispatchKeyEvent}
+
+func mouseMoved(x, y float64, buttons int64) input.DispatchMouseEventParams {
+	p := input.DispatchMouseEventParams{Type: input.DispatchMouseEventTypeMouseMoved, X: x, Y: y, Buttons: buttons}
+	if buttons != 0 {
+		p.Button = input.MouseButtonLeft
+	}
+	return p
+}
+
+func mouseButton(typ input.DispatchMouseEventType, x, y float64, buttons int64) input.DispatchMouseEventParams {
+	return input.DispatchMouseEventParams{
+		Type: typ, X: x, Y: y, Button: input.MouseButtonLeft, Buttons: buttons, ClickCount: 1,
+	}
+}
+
+func (s *Session) sendMouse(events ...input.DispatchMouseEventParams) error {
+	return chromedp.Do(s.ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		for _, event := range events {
+			if _, err := cdp.Call(ctx, t, dispatchMouseEvent, event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
+// Click sends a left click at viewport CSS coordinates: move, press, release.
+// The move lets mouseover-bound menus and handlers activate before the press.
 func (s *Session) Click(x, y float64) error {
-	return chromedp.Do(s.ctx, chromedp.MouseClickXY(x, y))
+	return s.sendMouse(
+		mouseMoved(x, y, 0),
+		mouseButton(input.DispatchMouseEventTypeMousePressed, x, y, 1),
+		mouseButton(input.DispatchMouseEventTypeMouseReleased, x, y, 0),
+	)
+}
+
+// MouseDown moves the pointer to x,y and presses the left button, starting a
+// drag that MouseMove continues and MouseUp ends. Sliders and canvas widgets
+// only respond to this press/move/release sequence; a plain click cannot move
+// them.
+func (s *Session) MouseDown(x, y float64) error {
+	return s.sendMouse(
+		mouseMoved(x, y, 0),
+		mouseButton(input.DispatchMouseEventTypeMousePressed, x, y, 1),
+	)
+}
+
+// MouseMove drags the left button to x,y.
+func (s *Session) MouseMove(x, y float64) error {
+	return s.sendMouse(mouseMoved(x, y, 1))
+}
+
+// MouseUp releases the left button at x,y.
+func (s *Session) MouseUp(x, y float64) error {
+	return s.sendMouse(
+		mouseMoved(x, y, 1),
+		mouseButton(input.DispatchMouseEventTypeMouseReleased, x, y, 0),
+	)
+}
+
+// InsertText inserts text into the focused element as IME input would. The
+// terminal delivers composed UTF-8 runes, so this is the only safe path for
+// Chinese text: synthesizing one key event per character would require a
+// keyboard layout that does not exist.
+func (s *Session) InsertText(value string) error {
+	if value == "" {
+		return nil
+	}
+	return chromedp.Do(s.ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		_, err := cdp.Call(ctx, t, input.InsertText, input.InsertTextParams{Text: value})
+		return err
+	}))
+}
+
+// pageKey describes a non-printing key a focused page field can receive.
+type pageKey struct {
+	key, code string
+	vk        int64
+	text      string
+}
+
+var pageEditingKeys = map[string]pageKey{
+	"Backspace":  {key: "Backspace", code: "Backspace", vk: 8},
+	"Enter":      {key: "Enter", code: "Enter", vk: 13, text: "\r"},
+	"ArrowLeft":  {key: "ArrowLeft", code: "ArrowLeft", vk: 37},
+	"ArrowUp":    {key: "ArrowUp", code: "ArrowUp", vk: 38},
+	"ArrowRight": {key: "ArrowRight", code: "ArrowRight", vk: 39},
+	"ArrowDown":  {key: "ArrowDown", code: "ArrowDown", vk: 40},
+}
+
+// KeyPress sends one editing key to the page's focused element.
+func (s *Session) KeyPress(name string) error {
+	def, ok := pageEditingKeys[name]
+	if !ok {
+		return fmt.Errorf("unsupported page key %q", name)
+	}
+	typ := input.DispatchKeyEventTypeRawKeyDown
+	if def.text != "" {
+		typ = input.DispatchKeyEventTypeKeyDown
+	}
+	return chromedp.Do(s.ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+		if _, err := cdp.Call(ctx, t, dispatchKeyEvent, input.DispatchKeyEventParams{
+			Type: typ, Key: def.key, Code: def.code, Text: def.text,
+			WindowsVirtualKeyCode: def.vk, NativeVirtualKeyCode: def.vk,
+		}); err != nil {
+			return err
+		}
+		_, err := cdp.Call(ctx, t, dispatchKeyEvent, input.DispatchKeyEventParams{
+			Type: input.DispatchKeyEventTypeKeyUp, Key: def.key, Code: def.code,
+			WindowsVirtualKeyCode: def.vk, NativeVirtualKeyCode: def.vk,
+		})
+		return err
+	}))
 }
 
 // Scroll sends a wheel event at viewport CSS coordinates. Positive deltaY
@@ -239,6 +356,64 @@ func (s *Session) Title(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("page title: %w", err)
 	}
 	return out, nil
+}
+
+// LayoutWidth reports the page's layout width in CSS pixels: the wider of the
+// viewport and the document's scroll extent. Callers use it to give fixed-width
+// desktop pages a viewport wide enough to show the whole layout instead of
+// clipping it at the pane edge.
+func (s *Session) LayoutWidth(ctx context.Context) (int, error) {
+	width, err := chromedp.Run(ctx, chromedp.Evaluate[float64](
+		`Math.max(window.innerWidth || 0, document.documentElement ? document.documentElement.scrollWidth : 0)`))
+	if err != nil {
+		return 0, fmt.Errorf("measure layout width: %w", err)
+	}
+	if width <= 0 {
+		return 0, nil
+	}
+	if width > 8192 {
+		width = 8192
+	}
+	return int(width + 0.5), nil
+}
+
+// editableFocusJS reports whether the page's active element accepts typed text.
+// Buttons, links and select elements do not, so browser shortcuts stay active
+// while they are focused.
+const editableFocusJS = `(() => {
+  const el = document.activeElement;
+  if (!el) return "";
+  if (el.isContentEditable) return "contenteditable";
+  const tag = el.tagName;
+  if (tag === "TEXTAREA") return "textarea";
+  if (tag !== "INPUT") return "";
+  const type = (el.getAttribute("type") || "text").toLowerCase();
+  if (["button", "checkbox", "color", "file", "hidden", "image",
+       "radio", "range", "reset", "submit"].includes(type)) return "";
+  return "input";
+})()`
+
+// EditableFocus reports whether a page element that accepts text is focused.
+// While it is true, printable keys must be typed into the page rather than
+// interpreted as browser shortcuts.
+func (s *Session) EditableFocus(ctx context.Context) (bool, error) {
+	kind, err := chromedp.Run(ctx, chromedp.Evaluate[string](editableFocusJS))
+	if err != nil {
+		return false, fmt.Errorf("page focus: %w", err)
+	}
+	return kind != "", nil
+}
+
+// BlurFocused clears page focus so browser shortcuts take over again.
+func (s *Session) BlurFocused(ctx context.Context) error {
+	_, err := chromedp.Run(ctx, chromedp.Evaluate[any](`(() => {
+		const el = document.activeElement;
+		if (el && el.blur) el.blur();
+	})()`))
+	if err != nil {
+		return fmt.Errorf("blur page focus: %w", err)
+	}
+	return nil
 }
 
 // History returns the owned history and the current index.

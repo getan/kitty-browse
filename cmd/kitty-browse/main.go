@@ -72,8 +72,8 @@ func main() {
 		profileDir  = flag.String("profile-dir", "", "dedicated persistent Chromium profile directory (default: user config directory)")
 		downloadDir = flag.String("download-dir", "", "download directory (default: profile Downloads, or temporary in private mode)")
 		private     = flag.Bool("private", false, "use a temporary profile and in-memory history; do not retain browsing data")
-		stealth     = flag.Bool("stealth", false, "experimental desktop UA and reduced automation markers; not a detection-bypass guarantee")
-		userAgent   = flag.String("user-agent", "", "optional explicit User-Agent; default: native Chromium, or desktop UA with -stealth")
+		stealth     = flag.Bool("stealth", true, "remove Chromium's headless UA token and automation markers (default on; -stealth=false restores the native headless identity)")
+		userAgent   = flag.String("user-agent", "", "optional explicit User-Agent; default: the running Chromium desktop UA with the headless token removed")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] [url]\n", os.Args[0])
@@ -208,6 +208,18 @@ func main() {
 	var reportedScrollError bool
 	var receivedFrames int
 	var resizePending bool
+	// fitWidth and fitHeight widen the virtual viewport when a page's layout is
+	// wider than the pane; see fitPageWidth.
+	var fitWidth, fitHeight int
+	// fitRetries re-measures for a few state ticks after a viewport or page
+	// change: a reflow caused by the change itself can make an immediate
+	// measurement report the old width.
+	var fitRetries int
+	// A page press owns the pointer until release, so a slider can be dragged
+	// and a text selection can be extended.
+	var dragging bool
+	var dragCol, dragRow int
+	var dragX, dragY float64
 	scroller := browser.NewScroller(sess.Context(), sess.ScrollContext)
 	defer func() { scroller.Stop() }()
 	resetScroller := func() {
@@ -218,7 +230,11 @@ func main() {
 
 	applyViewport := func() error {
 		scroller.Stop()
-		next := paneGeometry(rows, cols, pixels, *maxWidth, *maxHeight)
+		width, height := *maxWidth, *maxHeight
+		if width == 0 && fitWidth > 0 {
+			width, height = fitWidth, fitHeight
+		}
+		next := paneGeometry(rows, cols, pixels, width, height)
 		if err := sess.SetViewport(next.ContentWidthPx, next.ContentHeightPx); err != nil {
 			model.Status = err.Error()
 			debugf("viewport error: %v", err)
@@ -236,6 +252,33 @@ func main() {
 		}
 		drawChrome(screen, model, store)
 		return nil
+	}
+	// fitPageWidth widens the virtual viewport when a fixed-width desktop page
+	// would otherwise be clipped by the pane. Width and height grow together so
+	// the raster keeps the pane's aspect ratio: terminals scale a Kitty placement
+	// into its cell box, and a mismatched aspect would letterbox the page and
+	// desynchronize clicks. The image is then scaled back into the same cells, so
+	// the whole page stays visible.
+	fitPageWidth := func() {
+		if *maxWidth > 0 || *maxHeight > 0 || bridge.active.Load() > 0 {
+			return
+		}
+		base := paneGeometry(rows, cols, pixels, 0, 0)
+		measureCtx, cancel := context.WithTimeout(sess.Context(), time.Second)
+		pageWidth, err := sess.LayoutWidth(measureCtx)
+		cancel()
+		if err != nil {
+			return
+		}
+		width, height, ok := fitViewportSize(base.ContentWidthPx, base.ContentHeightPx, pageWidth)
+		if !ok || (width == fitWidth && height == fitHeight) {
+			return
+		}
+		fitWidth, fitHeight = width, height
+		debugf("fit page width=%d height=%d pane=%dx%d", fitWidth, fitHeight, base.ContentWidthPx, base.ContentHeightPx)
+		if err := applyViewport(); err != nil {
+			fitWidth, fitHeight = 0, 0
+		}
 	}
 	activateTab := func() error {
 		nextSession := tabs.Active()
@@ -261,6 +304,8 @@ func main() {
 		if model.TextMode {
 			screen.Text(model.TextView(screen.BodyRows(), cols))
 		}
+		fitPageWidth()
+		fitRetries = 2
 		return nil
 	}
 
@@ -418,6 +463,9 @@ func main() {
 		call.reply <- api.Respond(call.req, bridge.view.Load().info, target, result, actionErr)
 	}
 
+	fitPageWidth()
+	fitRetries = 2
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -432,7 +480,10 @@ func main() {
 				resizePending = true
 				continue
 			}
+			fitWidth, fitHeight = 0, 0
 			_ = applyViewport()
+			fitPageWidth()
+			fitRetries = 2
 			if *measure {
 				screen.QueryPixels()
 			}
@@ -452,6 +503,10 @@ func main() {
 				if *measure {
 					screen.QueryPixels()
 				}
+			}
+			if fitRetries > 0 {
+				fitRetries--
+				fitPageWidth()
 			}
 			before := tabs.Sessions()
 			if changed, err := tabs.Reconcile(ctx); err == nil && changed {
@@ -490,6 +545,10 @@ func main() {
 				if changedURL || title != oldTitle || oldBack != model.CanGoBack || oldForward != model.CanGoForward {
 					updatePaneTitle(pane, sess)
 					drawChrome(screen, model, store)
+				}
+				if changedURL {
+					fitPageWidth()
+					fitRetries = 2
 				}
 			}
 			bridge.update(tabs, titles)
@@ -537,12 +596,16 @@ func main() {
 				// Keep native actions deterministic: while golder owns the target,
 				// human input does not race its ref/coordinate operation. Emergency
 				// quit remains available and cancellation tears down the action ctx.
+				if dragging {
+					dragging = false
+					_ = sess.MouseUp(dragX, dragY)
+				}
 				if ev.Kind == term.KeyCtrlC || ev.Kind == term.KeyCtrlQ {
 					return
 				}
 				continue
 			}
-			if ev.Kind == term.KeyMouse && (ev.Mouse.Motion || !ev.Mouse.Press || ev.Mouse.WheelX != 0) {
+			if ev.Kind == term.KeyMouse && ev.Mouse.WheelX != 0 {
 				continue
 			}
 			if ev.Kind == term.KeyMouse && ev.Mouse.Wheel != 0 {
@@ -563,24 +626,77 @@ func main() {
 				if next := mergeCellPixels(pixels, ev.Pixels, rows, cols); next != pixels {
 					pixels = next
 					_ = applyViewport()
+					fitPageWidth()
 				}
 				continue
 			}
 			var action ui.Action
 			if ev.Kind == term.KeyMouse {
+				if dragging {
+					// A press owns the pointer until release, even when the drag
+					// crosses into the chrome rows.
+					x, y, inside := geom.CellToPixelClamped(ev.Mouse.Col, ev.Mouse.Row)
+					if !inside {
+						continue
+					}
+					if ev.Mouse.Motion {
+						if ev.Mouse.Col == dragCol && ev.Mouse.Row == dragRow {
+							continue
+						}
+						dragCol, dragRow, dragX, dragY = ev.Mouse.Col, ev.Mouse.Row, x, y
+						if err := sess.MouseMove(x, y); err != nil {
+							debugf("drag move error: %v", err)
+						}
+						continue
+					}
+					if !ev.Mouse.Press && ev.Mouse.Button == 0 {
+						dragging = false
+						if err := sess.MouseUp(x, y); err != nil {
+							model.Status = err.Error()
+							debugf("mouse up error: %v", err)
+							drawChrome(screen, model, store)
+						}
+					}
+					continue
+				}
+				if ev.Mouse.Motion {
+					continue
+				}
 				if ev.Mouse.Row <= term.ChromeRows {
 					action = model.HandleMouse(cols, ev.Mouse)
 				} else {
 					scroller.Stop()
-					if err := handleMouse(sess, geom, ev.Mouse); err != nil {
-						model.Status = err.Error()
-						debugf("mouse error: %v", err)
-						drawChrome(screen, model, store)
+					if ev.Mouse.Press && ev.Mouse.Button == 0 {
+						x, y, inside := geom.CellToPixel(ev.Mouse.Col, ev.Mouse.Row)
+						if inside {
+							if err := sess.MouseDown(x, y); err != nil {
+								model.Status = err.Error()
+								debugf("mouse down error: %v", err)
+								drawChrome(screen, model, store)
+							} else {
+								dragging, dragCol, dragRow, dragX, dragY = true, ev.Mouse.Col, ev.Mouse.Row, x, y
+							}
+						}
 					}
 					resetScroller()
 					continue
 				}
 			} else {
+				// A focused page text field owns typing: printable keys, Backspace,
+				// Enter and the arrow keys edit it instead of driving the chrome.
+				// Escape leaves the field so the browser shortcuts work again.
+				if !chromeOwnsKeys(model) {
+					if ev.Kind == term.KeyEscape {
+						if focused, err := pageFocused(sess); err == nil && focused {
+							if err := sess.BlurFocused(sess.Context()); err != nil {
+								debugf("blur page focus: %v", err)
+							}
+							continue
+						}
+					} else if pageEditableKeys(ev) && forwardPageKey(sess, ev) {
+						continue
+					}
+				}
 				action = model.Handle(ev)
 			}
 			debugf("action kind=%d url=%s label=%s", action.Kind, debugURL(action.URL), action.Label)
@@ -627,11 +743,15 @@ func main() {
 				if runNavigation(sess, model, action, *load) {
 					recordVisit(store, model, sess.URL())
 					updatePaneTitle(pane, sess)
+					fitPageWidth()
+					fitRetries = 2
 				}
 			case ui.ActionBack, ui.ActionForward, ui.ActionReload:
 				if runNavigation(sess, model, action, *load) {
 					recordVisit(store, model, sess.URL())
 					updatePaneTitle(pane, sess)
+					fitPageWidth()
+					fitRetries = 2
 				}
 			case ui.ActionShowHints:
 				hints, err := sess.Hints(sess.Context(), 49)
@@ -736,18 +856,62 @@ func updatePaneTitle(pane *tuios.Pane, sess *browser.Session) {
 	}
 }
 
-func handleMouse(sess *browser.Session, geom term.Geometry, m term.MouseEvent) error {
-	x, y, ok := geom.CellToPixel(m.Col, m.Row)
-	if !ok {
-		return nil
+// chromeOwnsKeys reports whether the browser chrome is consuming keyboard input,
+// in which case a focused page field must not receive it.
+func chromeOwnsKeys(m *ui.Model) bool {
+	return m.Editing || m.Overlay != ui.OverlayNone || m.HintMode || m.TextMode
+}
+
+// pageEditableKeys reports whether ev is an editing key a focused page field
+// should receive instead of the browser chrome.
+func pageEditableKeys(ev term.Event) bool {
+	switch ev.Kind {
+	case term.KeyText, term.KeyBackspace, term.KeyEnter,
+		term.KeyUp, term.KeyDown, term.KeyLeft, term.KeyRight:
+		return true
 	}
-	switch {
-	case m.Wheel != 0:
-		return sess.Scroll(x, y, float64(m.Wheel)*float64(geom.ContentHeightPx)/float64(max(geom.ContentRows, 1))*4)
-	case m.Press && !m.Motion && m.Button == 0:
-		return sess.Click(x, y)
+	return false
+}
+
+// pageFocused reports whether the page's active element accepts text. The check
+// is bounded so a busy page cannot stall the input loop.
+func pageFocused(sess *browser.Session) (bool, error) {
+	ctx, cancel := context.WithTimeout(sess.Context(), 250*time.Millisecond)
+	defer cancel()
+	return sess.EditableFocus(ctx)
+}
+
+// forwardPageKey sends one editing key to a focused page field and reports
+// whether the page consumed it. Printable characters go through InsertText so
+// composed CJK text arrives as a whole instead of as browser shortcuts.
+func forwardPageKey(sess *browser.Session, ev term.Event) bool {
+	focused, err := pageFocused(sess)
+	if err != nil || !focused {
+		return false
 	}
-	return nil
+	switch ev.Kind {
+	case term.KeyText:
+		err = sess.InsertText(string(ev.Rune))
+	case term.KeyBackspace:
+		err = sess.KeyPress("Backspace")
+	case term.KeyEnter:
+		err = sess.KeyPress("Enter")
+	case term.KeyUp:
+		err = sess.KeyPress("ArrowUp")
+	case term.KeyDown:
+		err = sess.KeyPress("ArrowDown")
+	case term.KeyLeft:
+		err = sess.KeyPress("ArrowLeft")
+	case term.KeyRight:
+		err = sess.KeyPress("ArrowRight")
+	default:
+		return false
+	}
+	if err != nil {
+		debugf("page key error: %v", err)
+		return false
+	}
+	return true
 }
 
 func readInput(ctx context.Context, in *os.File, events *inputQueue) {

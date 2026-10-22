@@ -17,11 +17,29 @@ func TestPanePixelsAndCustomResolution(t *testing.T) {
 	}
 	g = paneGeometry(53, 107, p, 1280, 1000)
 	x, y, ok := g.CellToPixel(107, 52)
-	if !ok || x >= 1280 || x < 1260 || y != 980 {
-		t.Fatalf("stretched image mapping = %v,%v,%v", x, y, ok)
+	// Cell centres, not cell corners: the last cell lands at 1274,990 instead
+	// of on the 1280,1000 image edge.
+	if !ok || x >= 1280 || x < 1260 || y != 990 {
+		t.Fatalf("stretched image cell centre = %v,%v,%v", x, y, ok)
 	}
 	if _, _, ok := g.CellToPixel(20, 53); ok {
 		t.Fatal("footer must not click through to webpage")
+	}
+}
+
+func TestFitViewportKeepsPaneAspect(t *testing.T) {
+	width, height, ok := fitViewportSize(1105, 1110, 1250)
+	if !ok || width != 1250 || height <= 1110 {
+		t.Fatalf("fit = %d,%d,%v", width, height, ok)
+	}
+	if got, want := float64(width)/float64(height), 1105.0/1110.0; math.Abs(got-want) > 0.002 {
+		t.Fatalf("aspect drifted: %dx%d", width, height)
+	}
+	if _, _, ok := fitViewportSize(1105, 1110, 1105); ok {
+		t.Fatal("a page that fits the pane must not be widened")
+	}
+	if width, _, ok := fitViewportSize(1105, 1110, 5000); !ok || width != 1920 {
+		t.Fatalf("cap = %d, %v", width, ok)
 	}
 }
 

@@ -29,8 +29,12 @@ func (g Geometry) CellToPixel(col, row int) (x, y float64, ok bool) {
 	}
 	// The image may have been rendered at a custom size and stretched into its
 	// cell placement. Map against the actual image extent, not an estimated cell.
-	x = float64(col-1) * float64(g.ContentWidthPx) / float64(g.Cols)
-	y = float64(row-g.ContentTopRow) * float64(g.ContentHeightPx) / float64(g.ContentRows)
+	// A terminal mouse report identifies a cell, not a point inside it. Aim at
+	// the cell centre: mapping to the top-left corner biases every click up and
+	// left by up to a full cell (one text line), which misses small links and
+	// list rows while large buttons still respond.
+	x = (float64(col) - 0.5) * float64(g.ContentWidthPx) / float64(g.Cols)
+	y = (float64(row-g.ContentTopRow) + 0.5) * float64(g.ContentHeightPx) / float64(g.ContentRows)
 	return x, y, true
 }
 
@@ -157,4 +161,18 @@ func GeometryFor(rows, cols int, p CellPixels) Geometry {
 
 func (g Geometry) String() string {
 	return fmt.Sprintf("%dx%d cells, %dx%d px", g.Cols, g.Rows, g.ContentWidthPx, g.ContentHeightPx)
+}
+
+// CellToPixelClamped maps a 1-based terminal cell to the page viewport, clamping
+// cells outside the content area to its nearest edge. A drag keeps producing
+// motion after the pointer leaves the page area, and the page expects the
+// pointer to keep tracking along the edge instead of freezing.
+func (g Geometry) CellToPixelClamped(col, row int) (x, y float64, ok bool) {
+	if g.Cols <= 0 || g.ContentRows <= 0 || g.ContentWidthPx <= 0 || g.ContentHeightPx <= 0 {
+		return 0, 0, false
+	}
+	return g.CellToPixel(
+		min(max(col, 1), g.Cols),
+		min(max(row, g.ContentTopRow), g.ContentTopRow+g.ContentRows-1),
+	)
 }

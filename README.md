@@ -125,7 +125,7 @@ Use an independent profile for each account/work context:
 ```bash
 ./bin/kitty-browse -profile-dir "$PWD/.local/profiles/work" https://example.com
 ./bin/kitty-browse -private https://example.com
-./bin/kitty-browse -private -stealth https://example.com
+./bin/kitty-browse -stealth=false https://example.com
 ```
 
 The profile directory is private (`0700`) and process-locked on macOS/Linux. Two
@@ -154,11 +154,13 @@ saved screenshots, shell/terminal/tuios logs, OS traces and the site's own recor
 are outside this cleanup guarantee. The old global history file is not migrated
 automatically into the new per-profile stores.
 
-### `-stealth` and User-Agent
+### Headless User-Agent and `-stealth`
 
-Without identity flags, Chromium's normal headless identity is left unchanged.
-`-stealth` is an **opt-in, experimental compatibility mode**, not a guarantee of
-passing anti-bot systems. It:
+kitty-browse **normalizes the browser identity by default**, because sites
+commonly reject Chromium's headless token outright (Baidu's risk control is one
+example). `-stealth` is enabled unless it is explicitly turned off with
+`-stealth=false`, which restores Chromium's native headless identity. This is a
+compatibility default, not a guarantee of passing anti-bot systems. It:
 
 - derives UA from the actual running Chromium, changing only `HeadlessChrome/`
   to `Chrome/`, without inventing a browser version or OS;
@@ -275,8 +277,8 @@ Useful flags:
 -download-dir browser download directory (default: profile Downloads; temporary in private mode)
 -profile-dir dedicated persistent profile (default: user config directory)
 -private    isolated temporary profile and memory-only application history
--stealth    optional desktop-UA / reduced automation markers (experimental)
--user-agent explicit UA override (otherwise native or -stealth-derived)
+-stealth    remove headless UA token + automation markers (default on; =false for native identity)
+-user-agent explicit UA override (otherwise the normalized desktop UA)
 ```
 
 ## Screenshots of the live page

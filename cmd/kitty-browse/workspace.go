@@ -26,6 +26,26 @@ func paneGeometry(rows, cols int, pixels term.CellPixels, width, height int) ter
 	return g
 }
 
+// fitViewportSize returns the raster size for a page whose layout is pageWidth
+// CSS pixels wide. Width and height grow together so the raster keeps the pane's
+// aspect ratio: terminals scale a Kitty placement into its cell box, so a
+// mismatched aspect would letterbox the page and desynchronize clicks. ok is
+// false when the page already fits the pane.
+func fitViewportSize(baseWidth, baseHeight, pageWidth int) (width, height int, ok bool) {
+	if baseWidth <= 0 || baseHeight <= 0 || pageWidth <= baseWidth {
+		return 0, 0, false
+	}
+	const maxFitWidth = 1920
+	if pageWidth > maxFitWidth {
+		pageWidth = maxFitWidth
+	}
+	if pageWidth <= baseWidth {
+		return 0, 0, false
+	}
+	scale := float64(pageWidth) / float64(baseWidth)
+	return pageWidth, int(float64(baseHeight)*scale + 0.5), true
+}
+
 func debugURL(raw string) string {
 	if raw == "" {
 		return ""
