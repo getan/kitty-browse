@@ -25,6 +25,7 @@ const (
 type LaunchOptions struct {
 	ExecutablePath string
 	ProfileDir     string
+	DownloadDir    string
 	UserAgent      string
 	Private        bool
 	Stealth        bool
@@ -33,9 +34,10 @@ type LaunchOptions struct {
 // ProfileInfo describes the kitty-browse-owned data associated with a browser
 // context. Private contexts do not have persistent profile or state paths.
 type ProfileInfo struct {
-	Dir       string
-	Private   bool
-	StatePath string
+	Dir         string
+	DownloadDir string
+	Private     bool
+	StatePath   string
 }
 
 // DefaultProfileDir returns kitty-browse's default, independent Chromium
@@ -91,10 +93,23 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	identity := IdentityOptions{Stealth: opts.Stealth, UserAgent: opts.UserAgent}
 
 	if opts.Private {
+		downloadDir, temporary, err := prepareDownloadDir(opts.DownloadDir, "")
+		if err != nil {
+			return nil, nil, empty, err
+		}
 		ctx, allocatorCancel := chromedp.NewExecAllocator(parent, allocatorOptions...)
 		var once sync.Once
-		cancel := func() { once.Do(allocatorCancel) }
-		return withIdentityOptions(ctx, identity), cancel, ProfileInfo{Private: true}, nil
+		cancel := func() {
+			once.Do(func() {
+				allocatorCancel()
+				if temporary {
+					_ = os.RemoveAll(downloadDir)
+				}
+			})
+		}
+		ctx = withIdentityOptions(ctx, identity)
+		ctx = withDownloadConfig(ctx, newDownloadConfig(downloadDir))
+		return ctx, cancel, ProfileInfo{DownloadDir: downloadDir, Private: true}, nil
 	}
 
 	profileDir, err := resolveProfileDir(opts.ProfileDir)
@@ -102,6 +117,10 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 		return nil, nil, empty, err
 	}
 	if err := prepareProfileDir(profileDir); err != nil {
+		return nil, nil, empty, err
+	}
+	downloadDir, _, err := prepareDownloadDir(opts.DownloadDir, profileDir)
+	if err != nil {
 		return nil, nil, empty, err
 	}
 	lock, err := acquireProfileLock(filepath.Join(profileDir, profileLockFile))
@@ -121,10 +140,55 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 		})
 	}
 	info := ProfileInfo{
-		Dir:       profileDir,
-		StatePath: filepath.Join(profileDir, profileStateFile),
+		Dir:         profileDir,
+		DownloadDir: downloadDir,
+		StatePath:   filepath.Join(profileDir, profileStateFile),
 	}
-	return withIdentityOptions(ctx, identity), cancel, info, nil
+	ctx = withIdentityOptions(ctx, identity)
+	ctx = withDownloadConfig(ctx, newDownloadConfig(downloadDir))
+	return ctx, cancel, info, nil
+}
+
+// prepareDownloadDir creates an owner-only download directory. Private
+// contexts use a temporary directory unless the caller explicitly chooses an
+// artifact directory; persistent contexts default to <profile>/Downloads.
+func prepareDownloadDir(configured, profileDir string) (dir string, temporary bool, err error) {
+	if strings.TrimSpace(configured) == "" {
+		if profileDir == "" {
+			dir, err = os.MkdirTemp("", "kitty-browse-downloads-")
+			if err != nil {
+				return "", false, fmt.Errorf("create private download directory: %w", err)
+			}
+			temporary = true
+		} else {
+			dir = filepath.Join(profileDir, "Downloads")
+		}
+	} else {
+		dir, err = filepath.Abs(configured)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve download directory %q: %w", configured, err)
+		}
+		dir = filepath.Clean(dir)
+	}
+	if info, statErr := os.Lstat(dir); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", false, fmt.Errorf("download path %q is a symbolic link", dir)
+		}
+		if !info.IsDir() {
+			return "", false, fmt.Errorf("download path %q is not a directory", dir)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return "", false, fmt.Errorf("inspect download directory %q: %w", dir, statErr)
+	} else if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, fmt.Errorf("create download directory %q: %w", dir, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		if temporary {
+			_ = os.RemoveAll(dir)
+		}
+		return "", false, fmt.Errorf("secure download directory %q: %w", dir, err)
+	}
+	return dir, temporary, nil
 }
 
 func validateUserAgent(userAgent string) error {

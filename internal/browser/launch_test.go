@@ -133,7 +133,7 @@ func TestPrivateContextDoesNotCreatePersistentProfile(t *testing.T) {
 	if ctx == nil || cancel == nil {
 		t.Fatal("private NewBrowserContext returned a nil context or cancel")
 	}
-	if info != (ProfileInfo{Private: true}) {
+	if !info.Private || info.Dir != "" || info.StatePath != "" || info.DownloadDir == "" {
 		t.Fatalf("private ProfileInfo = %+v", info)
 	}
 	cancel()

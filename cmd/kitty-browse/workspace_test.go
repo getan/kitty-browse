@@ -50,3 +50,10 @@ func TestFractionalFrameCadenceAndScrollGain(t *testing.T) {
 		}
 	}
 }
+
+func TestDebugURLRemovesCredentialsAndTokens(t *testing.T) {
+	got := debugURL("https://user:password@example.com/callback?code=secret#token")
+	if got != "https://example.com/callback" {
+		t.Fatalf("debug URL leaked sensitive components: %q", got)
+	}
+}

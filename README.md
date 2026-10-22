@@ -179,6 +179,48 @@ IPs, defeat challenges/captchas, or manufacture human behavior. The normal UI is
 already driven by the user's clicks and typing; adding random delays does not
 make automation genuinely human. Respect each site's access rules and limits.
 
+## Native actions for golder and automation
+
+`kitty-browse` exposes a versioned, owner-only JSON API on its optional Unix
+socket. The implementation is compiled into this Go binary and talks over the
+existing private CDP pipe: **runtime dependencies remain only kitty-browse and
+Chromium**. It does not invoke terminal-browser, agent-browser, Node.js,
+Playwright, Python or a remote-debugging TCP endpoint.
+
+```bash
+./bin/kitty-browse \
+  -profile-dir "$PWD/.local/profiles/work" \
+  -control-socket "$PWD/.local/live.sock" \
+  https://example.com
+
+./bin/kitty-browse info -socket "$PWD/.local/live.sock"
+./bin/kitty-browse action -socket "$PWD/.local/live.sock" -- snapshot -i -c
+./bin/kitty-browse action -socket "$PWD/.local/live.sock" -- click @e12
+./bin/kitty-browse action -socket "$PWD/.local/live.sock" -- fill @e9 'hello'
+./bin/kitty-browse action -socket "$PWD/.local/live.sock" -- get url
+./bin/kitty-browse action -socket "$PWD/.local/live.sock" -- done
+```
+
+The CLI is a convenience client for the same `/v1/info` and `/v1/actions` API
+that a future golder built-in tool should call directly. `/v1/info` returns
+stable browser/tab/target IDs and machine-readable capability schemas; clients
+must pin those IDs and re-discover after tab/navigation lifecycle changes.
+
+Implemented native capabilities include AX snapshot/refs, CSS and accessible
+locators, safe pointer/input/keyboard actions, waits, same-process and OOPIF
+frames, dialogs, popup observation, tab/navigation/viewport lifecycle, bounded
+network/console/error observation, response bodies, cookies/storage,
+browser-scoped downloads, screenshots and PDF. Prefer snapshot/ref over visual
+coordinate guessing. SSO, MFA, QR scan and consequential business writes remain
+human-in-the-loop operations.
+
+This is a stable typed API, not a claim of byte-for-byte agent-browser CLI
+compatibility. Network interception/mock/HAR, video/trace, full device emulation,
+closed-shadow piercing and WebMCP are not currently exposed. See
+[`docs/action-api.md`](docs/action-api.md) for the full contract and
+[`skill/kitty-browse/SKILL.md`](skill/kitty-browse/SKILL.md) for the golder
+workflow.
+
 ## Controls
 
 The top **two rows are mouse-clickable TUI controls**, not part of the webpage:
@@ -230,6 +272,7 @@ Useful flags:
 -chrome     Chromium executable path (default: KITTY_BROWSE_CHROME, then auto-detect)
 -control-socket optional local Unix socket for screenshots of this live browser
 -screenshot-dir hotkey screenshot directory (default .local/screenshots)
+-download-dir browser download directory (default: profile Downloads; temporary in private mode)
 -profile-dir dedicated persistent profile (default: user config directory)
 -private    isolated temporary profile and memory-only application history
 -stealth    optional desktop-UA / reduced automation markers (experimental)

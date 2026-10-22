@@ -43,6 +43,7 @@ type Action struct {
 	Kind  ActionKind
 	URL   string
 	Label string
+	Hint  *browser.Hint
 	Index int
 }
 
@@ -63,6 +64,7 @@ type Model struct {
 	CanGoBack    bool
 	CanGoForward bool
 	Private      bool
+	AgentActive  bool
 
 	// replaceAddress records the selection made by clicking the address field.
 	// The next typed character replaces the selection rather than appending.
@@ -134,6 +136,9 @@ func (m *Model) Footer(bookmarked bool) string {
 		return ""
 	}
 	line := m.footer(bookmarked)
+	if m.AgentActive {
+		line = "AGENT · " + line
+	}
 	if m.Private {
 		return "PRIVATE · " + line
 	}
@@ -284,11 +289,11 @@ func (m *Model) Handle(ev term.Event) Action {
 			m.HintBuffer += string(ev.Rune)
 			for _, h := range m.Hints {
 				if h.Label == m.HintBuffer {
-					label := h.Label
+					target := h
 					m.HintMode = false
 					m.HintBuffer = ""
 					m.Hints = nil
-					return Action{Kind: ActionHint, Label: label}
+					return Action{Kind: ActionHint, Label: target.Label, Hint: &target}
 				}
 			}
 			// Keep a valid prefix; otherwise start a new label with this key.

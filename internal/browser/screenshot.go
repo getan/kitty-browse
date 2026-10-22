@@ -9,6 +9,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
+	"github.com/getan/kitty-browse/internal/captureguard"
 )
 
 const maxScreenshotPixels = 100_000_000
@@ -24,8 +25,10 @@ func (s *Session) Screenshot(ctx context.Context, fullPage bool) ([]byte, error)
 	}
 
 	captureCtx, cancel := context.WithTimeout(s.ctx, 10*time.Second)
+	endCapture := captureguard.Begin(s.TargetID())
 	stop := context.AfterFunc(ctx, cancel)
 	defer func() {
+		endCapture()
 		stop()
 		cancel()
 	}()

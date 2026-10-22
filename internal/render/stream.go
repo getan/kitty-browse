@@ -23,6 +23,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
+	"github.com/getan/kitty-browse/internal/captureguard"
 	"github.com/kenshaw/rasterm"
 )
 
@@ -86,6 +87,7 @@ type Stream struct {
 	raw    chan rawFrame
 	fps    float64
 	stats  streamStats
+	target string
 
 	wg      sync.WaitGroup
 	mu      sync.Mutex
@@ -143,6 +145,9 @@ func Start(ctx context.Context, cfg Config) (*Stream, error) {
 	s := &Stream{
 		ctx: ctx, cancel: cancel, enc: cfg.Encoder, kitty: kitty, frames: make(chan image.Image, 1),
 		raw: make(chan rawFrame, 1), fps: cfg.FPS, width: cfg.Width, height: cfg.Height,
+	}
+	if c := chromedp.FromContext(ctx); c != nil && c.Target != nil {
+		s.target = string(c.Target.TargetID)
 	}
 	s.wg.Add(2)
 	go s.receive(rctx, frames)
@@ -287,7 +292,9 @@ func (s *Stream) Still(ctx context.Context) (image.Image, error) {
 	// Only the stream owns the CDP target. Callers may pass an ordinary
 	// cancellation context (the UI does), which has no chromedp context value.
 	callCtx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	endCapture := captureguard.Begin(s.target)
 	defer cancel()
+	defer endCapture()
 	stop := context.AfterFunc(ctx, cancel)
 	defer stop()
 	res, err := chromedp.Call(callCtx, page.CaptureScreenshot, page.CaptureScreenshotParams{
@@ -400,6 +407,10 @@ func (s *Stream) decode(ctx context.Context) {
 		next = started.Add(interval)
 		digest := sha256.Sum256(frame.data)
 		if havePrevious && digest == previous {
+			s.stats.dropped.Add(1)
+			continue
+		}
+		if captureguard.Active(s.target) {
 			s.stats.dropped.Add(1)
 			continue
 		}

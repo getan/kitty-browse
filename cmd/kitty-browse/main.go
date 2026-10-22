@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	api "github.com/getan/kitty-browse/internal/action"
 	"github.com/getan/kitty-browse/internal/browser"
 	"github.com/getan/kitty-browse/internal/control"
 	"github.com/getan/kitty-browse/internal/history"
@@ -36,11 +38,25 @@ func debugf(format string, args ...any) {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "screenshot" {
-		if err := runScreenshot(os.Args[2:], os.Stdout, os.Stderr); err != nil && !errors.Is(err, flag.ErrHelp) {
-			log.Fatal(err)
+	if len(os.Args) > 1 {
+		var err error
+		command := true
+		switch os.Args[1] {
+		case "action":
+			err = runAction(os.Args[2:], os.Stdin, os.Stdout, os.Stderr)
+		case "info":
+			err = runInfo(os.Args[2:], os.Stdout, os.Stderr)
+		case "screenshot":
+			err = runScreenshot(os.Args[2:], os.Stdout, os.Stderr)
+		default:
+			command = false
 		}
-		return
+		if command {
+			if err != nil && !errors.Is(err, flag.ErrHelp) {
+				log.Fatal(err)
+			}
+			return
+		}
 	}
 	var (
 		fps         = flag.Float64("fps", 24, "maximum frames per second (0.1..240)")
@@ -51,9 +67,10 @@ func main() {
 		load        = flag.Duration("load-timeout", 30*time.Second, "page load timeout")
 		measure     = flag.Bool("measure-cells", true, "query cell pixel size asynchronously (disable with -measure-cells=false)")
 		chrome      = flag.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
-		socket      = flag.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional Unix socket for screenshots of this running browser")
+		socket      = flag.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional owner-only Unix socket for native browser actions and screenshots")
 		shotDir     = flag.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
 		profileDir  = flag.String("profile-dir", "", "dedicated persistent Chromium profile directory (default: user config directory)")
+		downloadDir = flag.String("download-dir", "", "download directory (default: profile Downloads, or temporary in private mode)")
 		private     = flag.Bool("private", false, "use a temporary profile and in-memory history; do not retain browsing data")
 		stealth     = flag.Bool("stealth", false, "experimental desktop UA and reduced automation markers; not a detection-bypass guarantee")
 		userAgent   = flag.String("user-agent", "", "optional explicit User-Agent; default: native Chromium, or desktop UA with -stealth")
@@ -63,6 +80,10 @@ func main() {
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if flag.NArg() > 1 {
+		flag.Usage()
+		log.Fatal("pass flags before the single optional URL")
+	}
 
 	interval, err := frameInterval(*fps)
 	if err != nil || !validScrollLines(*scrollLines) {
@@ -75,7 +96,7 @@ func main() {
 			defer f.Close()
 		}
 	}
-	debugf("start target=%q", flag.Arg(0))
+	debugf("start target=%q", debugURL(flag.Arg(0)))
 
 	target := strings.TrimSpace(flag.Arg(0))
 	if target == "" {
@@ -86,7 +107,7 @@ func main() {
 	defer stop()
 
 	browserCtx, closeAlloc, profile, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
-		ExecutablePath: *chrome, ProfileDir: *profileDir, Private: *private,
+		ExecutablePath: *chrome, ProfileDir: *profileDir, DownloadDir: *downloadDir, Private: *private,
 		Stealth: *stealth, UserAgent: *userAgent,
 	})
 	if err != nil {
@@ -101,7 +122,7 @@ func main() {
 	}
 	defer tabs.Close()
 	sess := tabs.Active()
-	debugf("browser open url=%s", sess.URL())
+	debugf("browser open url=%s", debugURL(sess.URL()))
 
 	pane := tuios.FromEnv(nil)
 	defer pane.Clear()
@@ -155,24 +176,14 @@ func main() {
 	defer func() { _ = screen.WriteBody(stream.Clear) }()
 	debugf("render started")
 
-	if *socket != "" {
-		server, err := control.Start(*socket, tabs.Screenshot)
-		if err != nil {
-			debugf("control socket error: %v", err)
-			screen.Close()
-			log.Print(err)
-			return
-		}
-		defer server.Close()
-		debugf("screenshot control socket=%s", *socket)
-	}
-
 	model := ui.New(sess.URL())
 	model.Private = profile.Private
 	tabModels := []*ui.Model{model}
 	titles := map[*browser.Session]string{}
 	cacheTabTitle(titles, sess)
 	syncTabChrome(model, tabs, titles)
+	bridge := newActionBridge("browser-" + newActionRequestID())
+	bridge.update(tabs, titles)
 	refreshLists(model, store)
 	updatePaneTitle(pane, sess)
 	drawChrome(screen, model, store)
@@ -196,6 +207,7 @@ func main() {
 	var reportedRenderError bool
 	var reportedScrollError bool
 	var receivedFrames int
+	var resizePending bool
 	scroller := browser.NewScroller(sess.Context(), sess.ScrollContext)
 	defer func() { scroller.Stop() }()
 	resetScroller := func() {
@@ -204,15 +216,18 @@ func main() {
 		reportedScrollError = false
 	}
 
-	applyViewport := func() {
+	applyViewport := func() error {
 		scroller.Stop()
-		geom = paneGeometry(rows, cols, pixels, *maxWidth, *maxHeight)
-		stream.SetViewportSize(geom.ContentWidthPx, geom.ContentHeightPx)
-		stream.SetCellSize(cols, geom.ContentRows)
-		if err := sess.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx); err != nil {
+		next := paneGeometry(rows, cols, pixels, *maxWidth, *maxHeight)
+		if err := sess.SetViewport(next.ContentWidthPx, next.ContentHeightPx); err != nil {
 			model.Status = err.Error()
 			debugf("viewport error: %v", err)
+			resetScroller()
+			return err
 		}
+		geom = next
+		stream.SetViewportSize(geom.ContentWidthPx, geom.ContentHeightPx)
+		stream.SetCellSize(cols, geom.ContentRows)
 		resetScroller()
 		haveStill = false
 		debugf("updated geometry=%+v cell pixels=%+v", geom, pixels)
@@ -220,18 +235,20 @@ func main() {
 			screen.Text(model.TextView(screen.BodyRows(), cols))
 		}
 		drawChrome(screen, model, store)
+		return nil
 	}
 	activateTab := func() error {
-		stream.Stop()
-		sess = tabs.Active()
-		model = tabModels[tabs.Index()]
-		if err := sess.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx); err != nil {
+		nextSession := tabs.Active()
+		nextModel := tabModels[tabs.Index()]
+		if err := nextSession.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx); err != nil {
 			return err
 		}
-		next, err := startTabStream(sess, geom, *fps, *quality)
+		next, err := startTabStream(nextSession, geom, *fps, *quality)
 		if err != nil {
 			return err
 		}
+		stream.Stop()
+		sess, model = nextSession, nextModel
 		stream = next
 		lastImage = nil
 		lastStill, lastStillFor = time.Time{}, time.Time{}
@@ -247,15 +264,175 @@ func main() {
 		return nil
 	}
 
+	if *socket != "" {
+		server, err := control.Start(*socket, tabs.Screenshot, control.WithAPI(bridge.information, bridge.execute))
+		if err != nil {
+			screen.Close()
+			log.Print(err)
+			return
+		}
+		defer server.Close()
+		debugf("native action control socket=%s browser=%s", *socket, bridge.id)
+	}
+
+	handleHostAction := func(call hostActionCall) {
+		view := bridge.view.Load()
+		target, targetErr := api.SelectTarget(view.info, call.req.Target)
+		result, actionErr := func() (json.RawMessage, error) {
+			if call.ctx.Err() != nil {
+				return nil, call.ctx.Err()
+			}
+			var p struct {
+				URL    string `json:"url"`
+				TabID  string `json:"tabId"`
+				Width  int    `json:"width"`
+				Height int    `json:"height"`
+			}
+			if len(call.req.Params) != 0 && json.Unmarshal(call.req.Params, &p) != nil {
+				return nil, clientError("invalid_arguments", "invalid host action parameters")
+			}
+			if browserScopedAction(call.req.Action) {
+				switch call.req.Action {
+				case "info", "tab.list":
+					return json.Marshal(view.info)
+				case "capabilities":
+					return json.Marshal(api.Capabilities())
+				case "done":
+					return json.RawMessage(`{"released":true}`), nil
+				case "tab.new":
+					if call.ctx.Err() != nil {
+						return nil, call.ctx.Err()
+					}
+					scroller.Stop()
+					if p.URL == "" {
+						p.URL = "about:blank"
+					}
+					if err := tabs.New(call.ctx, p.URL, *load); err != nil {
+						resetScroller()
+						return nil, err
+					}
+					fresh := ui.New(tabs.Active().URL())
+					fresh.Private = profile.Private
+					tabModels = append(tabModels, fresh)
+					if err := activateTab(); err != nil {
+						return nil, err
+					}
+					resetScroller()
+				}
+				syncTabChrome(model, tabs, titles)
+				bridge.update(tabs, titles)
+				target, _ = api.SelectTarget(bridge.view.Load().info, api.Target{})
+				return json.Marshal(bridge.view.Load().info)
+			}
+			if targetErr != nil {
+				return nil, targetErr
+			}
+			index := target.Index - 1
+			sessions := tabs.Sessions()
+			if index < 0 || index >= len(sessions) || sessions[index].TargetID() != target.ID {
+				return nil, clientError("target_not_found", "selected tab has closed or changed")
+			}
+			switch call.req.Action {
+			case "tab.activate":
+				if call.ctx.Err() != nil {
+					return nil, call.ctx.Err()
+				}
+				scroller.Stop()
+				if err := tabs.Select(index); err != nil {
+					resetScroller()
+					return nil, err
+				}
+				if err := activateTab(); err != nil {
+					return nil, err
+				}
+				resetScroller()
+			case "tab.close":
+				if call.ctx.Err() != nil {
+					return nil, call.ctx.Err()
+				}
+				scroller.Stop()
+				if err := tabs.CloseTab(index); err != nil {
+					resetScroller()
+					if errors.Is(err, browser.ErrLastTab) {
+						return nil, clientError("last_tab", "the last tab cannot be closed; quit the browser explicitly")
+					}
+					return nil, err
+				}
+				delete(titles, sessions[index])
+				tabModels = append(tabModels[:index], tabModels[index+1:]...)
+				if err := activateTab(); err != nil {
+					return nil, err
+				}
+				resetScroller()
+			case "set.viewport":
+				if call.ctx.Err() != nil {
+					return nil, call.ctx.Err()
+				}
+				if index != tabs.Index() {
+					return nil, clientError("target_not_active", "activate the selected tab before changing its viewport")
+				}
+				if p.Width < 1 || p.Height < 1 || p.Width > 8192 || p.Height > 8192 {
+					return nil, clientError("invalid_arguments", "viewport dimensions must be between 1 and 8192")
+				}
+				oldWidth, oldHeight := *maxWidth, *maxHeight
+				*maxWidth, *maxHeight = p.Width, p.Height
+				if err := applyViewport(); err != nil {
+					*maxWidth, *maxHeight = oldWidth, oldHeight
+					return nil, err
+				}
+				return json.Marshal(map[string]int{"width": geom.ContentWidthPx, "height": geom.ContentHeightPx})
+			case "navigate", "back", "forward", "reload":
+				scroller.Stop()
+				selected := sessions[index]
+				var err error
+				switch call.req.Action {
+				case "navigate":
+					err = selected.Navigate(call.ctx, p.URL, *load)
+				case "back":
+					err = selected.Back(call.ctx, *load)
+				case "forward":
+					err = selected.Forward(call.ctx, *load)
+				case "reload":
+					err = selected.Reload(call.ctx, *load)
+				}
+				resetScroller()
+				if err != nil {
+					return nil, err
+				}
+				tabModels[index].SetURL(selected.URL())
+				cacheTabTitle(titles, selected)
+				recordVisit(store, tabModels[index], selected.URL())
+			default:
+				return nil, clientError("unsupported_action", "unsupported host action")
+			}
+			syncTabChrome(model, tabs, titles)
+			bridge.update(tabs, titles)
+			if updated, err := api.SelectTarget(bridge.view.Load().info, api.Target{TargetID: target.TargetID}); err == nil {
+				target = updated
+			}
+			return json.Marshal(bridge.view.Load().info)
+		}()
+		bridge.update(tabs, titles)
+		syncTabChrome(model, tabs, titles)
+		drawChrome(screen, model, store)
+		call.reply <- api.Respond(call.req, bridge.view.Load().info, target, result, actionErr)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			debugf("ctx done")
 			return
+		case call := <-bridge.calls:
+			handleHostAction(call)
 		case <-resize:
 			rows, cols = screen.Refresh()
 			pixels.WidthPx, pixels.HeightPx = cols*pixels.CellW, rows*pixels.CellH
-			applyViewport()
+			if bridge.active.Load() > 0 {
+				resizePending = true
+				continue
+			}
+			_ = applyViewport()
 			if *measure {
 				screen.QueryPixels()
 			}
@@ -265,6 +442,41 @@ func main() {
 			}
 			if scroller.Busy() || events.Stats().Pending != 0 {
 				continue // Don't compete with a gesture for CDP round trips.
+			}
+			if bridge.active.Load() > 0 {
+				continue
+			}
+			if resizePending {
+				resizePending = false
+				_ = applyViewport()
+				if *measure {
+					screen.QueryPixels()
+				}
+			}
+			before := tabs.Sessions()
+			if changed, err := tabs.Reconcile(ctx); err == nil && changed {
+				remembered := make(map[*browser.Session]*ui.Model)
+				for i, old := range before {
+					if i < len(tabModels) {
+						remembered[old] = tabModels[i]
+					}
+				}
+				tabModels = nil
+				for _, item := range tabs.Sessions() {
+					saved := remembered[item]
+					if saved == nil {
+						saved = ui.New(item.URL())
+						saved.Private = profile.Private
+					}
+					tabModels = append(tabModels, saved)
+				}
+				scroller.Stop()
+				if err := activateTab(); err != nil {
+					debugf("reconcile active tab: %v", err)
+					return
+				}
+				resetScroller()
+				drawChrome(screen, model, store)
 			}
 			oldTitle, oldBack, oldForward := titles[sess], model.CanGoBack, model.CanGoForward
 			if title, err := sess.Sync(ctx); err == nil {
@@ -280,7 +492,12 @@ func main() {
 					drawChrome(screen, model, store)
 				}
 			}
+			bridge.update(tabs, titles)
 		case <-tick.C:
+			if model.AgentActive != (bridge.active.Load() > 0) {
+				model.AgentActive = bridge.active.Load() > 0
+				drawChrome(screen, model, store)
+			}
 			if err := scroller.Err(); err != nil && !reportedScrollError {
 				model.Status = err.Error()
 				debugf("scroll error: %v", err)
@@ -316,6 +533,15 @@ func main() {
 			if !ok {
 				continue
 			}
+			if bridge.active.Load() > 0 {
+				// Keep native actions deterministic: while golder owns the target,
+				// human input does not race its ref/coordinate operation. Emergency
+				// quit remains available and cancellation tears down the action ctx.
+				if ev.Kind == term.KeyCtrlC || ev.Kind == term.KeyCtrlQ {
+					return
+				}
+				continue
+			}
 			if ev.Kind == term.KeyMouse && (ev.Mouse.Motion || !ev.Mouse.Press || ev.Mouse.WheelX != 0) {
 				continue
 			}
@@ -336,7 +562,7 @@ func main() {
 			if ev.Kind == term.KeyCellPixels {
 				if next := mergeCellPixels(pixels, ev.Pixels, rows, cols); next != pixels {
 					pixels = next
-					applyViewport()
+					_ = applyViewport()
 				}
 				continue
 			}
@@ -357,7 +583,7 @@ func main() {
 			} else {
 				action = model.Handle(ev)
 			}
-			debugf("action kind=%d url=%s label=%s", action.Kind, action.URL, action.Label)
+			debugf("action kind=%d url=%s label=%s", action.Kind, debugURL(action.URL), action.Label)
 			if interruptsScroll(action.Kind) {
 				scroller.Stop()
 			}
@@ -418,7 +644,7 @@ func main() {
 				_ = sess.ClearHints(sess.Context())
 				model.ClearHints()
 			case ui.ActionHint:
-				handleHint(sess, model, action.Label)
+				handleHint(sess, model, action)
 			case ui.ActionOpenHistory:
 				model.OpenOverlay(ui.OverlayHistory, store.History())
 			case ui.ActionOpenBookmarks:
@@ -463,6 +689,7 @@ func main() {
 				cacheTabTitle(titles, sess)
 			}
 			syncTabChrome(model, tabs, titles)
+			bridge.update(tabs, titles)
 			drawChrome(screen, model, store)
 		case img := <-stream.Frames():
 			receivedFrames++
@@ -479,13 +706,10 @@ func main() {
 	}
 }
 
-func handleHint(sess *browser.Session, model *ui.Model, label string) {
+func handleHint(sess *browser.Session, model *ui.Model, action ui.Action) {
 	var target browser.Hint
-	for _, h := range model.Hints {
-		if h.Label == label {
-			target = h
-			break
-		}
+	if action.Hint != nil {
+		target = *action.Hint
 	}
 	_ = sess.ClearHints(sess.Context())
 	if target.Label != "" {

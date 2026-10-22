@@ -73,7 +73,10 @@ func TestHintModeSelectsLabel(t *testing.T) {
 	if a := m.Handle(term.Event{Kind: term.KeyAltF}); a.Kind != ActionShowHints {
 		t.Fatalf("alt-f = %+v", a)
 	}
-	m.SetHints([]browser.Hint{{Label: "as"}, {Label: "df"}})
+	m.SetHints([]browser.Hint{
+		{ID: "target-1", Label: "as", X: 10, Y: 20, CX: 31, CY: 42, Kind: "link"},
+		{ID: "target-2", Label: "df", CX: 50, CY: 60, Kind: "input"},
+	})
 	if !m.HintMode {
 		t.Fatal("hint mode not entered")
 	}
@@ -83,6 +86,15 @@ func TestHintModeSelectsLabel(t *testing.T) {
 	a := m.Handle(term.Event{Kind: term.KeyText, Rune: 's'})
 	if a.Kind != ActionHint || a.Label != "as" || m.HintMode {
 		t.Fatalf("selection = %+v hintmode=%v", a, m.HintMode)
+	}
+	if len(m.Hints) != 0 {
+		t.Fatalf("hint overlay not cleared after selection: %+v", m.Hints)
+	}
+	if a.Hint == nil {
+		t.Fatal("selected hint target missing after overlay clear")
+	}
+	if a.Hint.ID != "target-1" || a.Hint.Kind != "link" || a.Hint.CX != 31 || a.Hint.CY != 42 || a.Hint.X != 10 || a.Hint.Y != 20 {
+		t.Fatalf("selected hint target = %+v", a.Hint)
 	}
 }
 
@@ -175,10 +187,10 @@ func TestUnicodeAddressBackspaceAndTextView(t *testing.T) {
 
 func TestPrivateModeIsAlwaysVisibleInFooter(t *testing.T) {
 	m := New("https://example.com")
-	m.Private = true
+	m.Private, m.AgentActive = true, true
 	for _, status := range []string{"", "saved screenshot.png", "navigation error"} {
 		m.Status = status
-		if got := m.Footer(false); !strings.HasPrefix(got, "PRIVATE · ") || status != "" && !strings.Contains(got, status) {
+		if got := m.Footer(false); !strings.HasPrefix(got, "PRIVATE · AGENT · ") || status != "" && !strings.Contains(got, status) {
 			t.Fatalf("private footer = %q", got)
 		}
 	}

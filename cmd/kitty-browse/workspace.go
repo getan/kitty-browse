@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/url"
 	"time"
 
 	"github.com/getan/kitty-browse/internal/browser"
@@ -23,6 +24,22 @@ func paneGeometry(rows, cols int, pixels term.CellPixels, width, height int) ter
 	g.ContentWidthPx = max(g.ContentWidthPx, 1)
 	g.ContentHeightPx = max(g.ContentHeightPx, 1)
 	return g
+}
+
+func debugURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	normalized, err := browser.Normalize(raw)
+	if err != nil {
+		return "[invalid-url]"
+	}
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "[invalid-url]"
+	}
+	u.User, u.RawQuery, u.Fragment = nil, "", ""
+	return u.String()
 }
 
 func mergeCellPixels(current, reply term.CellPixels, rows, cols int) term.CellPixels {
@@ -58,9 +75,16 @@ func cacheTabTitle(titles map[*browser.Session]string, sess *browser.Session) {
 
 func syncTabChrome(model *ui.Model, tabs *browser.Tabs, titles map[*browser.Session]string) {
 	sessions := tabs.Sessions()
+	live := make(map[*browser.Session]bool, len(sessions))
 	model.Tabs = make([]ui.TabInfo, len(sessions))
 	for i, sess := range sessions {
+		live[sess] = true
 		model.Tabs[i] = ui.TabInfo{Title: titles[sess], URL: sess.URL()}
+	}
+	for sess := range titles {
+		if !live[sess] {
+			delete(titles, sess)
+		}
 	}
 	model.ActiveTab = tabs.Index()
 	if active := tabs.Active(); active != nil {

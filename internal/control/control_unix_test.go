@@ -5,6 +5,7 @@ package control
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -245,5 +246,121 @@ func TestCaptureRejectsOversizeResponse(t *testing.T) {
 	_, err = Capture(context.Background(), socket, false)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("Capture error = %v, want size-limit error", err)
+	}
+}
+
+func TestInfoAndActionRoundTrip(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortTempDir(t), "api.sock")
+	server, err := Start(socket,
+		func(context.Context, bool) ([]byte, error) { return []byte("png"), nil },
+		WithAPI(
+			func(context.Context) (json.RawMessage, error) {
+				return json.RawMessage(`{"apiVersion":"v1","ok":true,"tabs":[]}`), nil
+			},
+			func(_ context.Context, request json.RawMessage) (json.RawMessage, error) {
+				return append(json.RawMessage(nil), request...), nil
+			},
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	info, err := Info(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(info) || !strings.Contains(string(info), `"tabs"`) {
+		t.Fatalf("unexpected info: %s", info)
+	}
+	request := json.RawMessage(`{"id":"roundtrip","type":"noop"}`)
+	response, err := Action(context.Background(), socket, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != string(request) {
+		t.Fatalf("action response = %s, want %s", response, request)
+	}
+	shot, err := Capture(context.Background(), socket, false)
+	if err != nil || string(shot) != "png" {
+		t.Fatalf("legacy screenshot = %q, %v", shot, err)
+	}
+}
+
+func TestActionReturnsJSONErrorEnvelope(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortTempDir(t), "api.sock")
+	server, err := Start(socket,
+		func(context.Context, bool) ([]byte, error) { return nil, nil },
+		WithAPI(nil, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			return nil, errors.New("failed")
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	response, err := Action(context.Background(), socket, json.RawMessage(`{"id":"e"}`))
+	if err != nil {
+		t.Fatalf("Action rejected valid JSON error envelope: %v", err)
+	}
+	var envelope apiErrorEnvelope
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "internal_error" || string(envelope.ID) != `"e"` {
+		t.Fatalf("unexpected envelope: %s", response)
+	}
+}
+
+func TestActionCancellationReachesCallback(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortTempDir(t), "api.sock")
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	server, err := Start(socket,
+		func(context.Context, bool) ([]byte, error) { return nil, nil },
+		WithAPI(nil, func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+			close(started)
+			<-ctx.Done()
+			done <- ctx.Err()
+			return nil, ctx.Err()
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, requestErr := Action(ctx, socket, json.RawMessage(`{}`))
+		result <- requestErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("action callback did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Action error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Action did not return after cancellation")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("callback error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("callback context was not canceled")
 	}
 }

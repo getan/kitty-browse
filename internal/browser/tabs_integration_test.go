@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	cdptarget "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -151,6 +152,72 @@ func TestScrollWheelIntegration(t *testing.T) {
 			t.Fatal("wheel event did not increase scrollY")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestTabsReconcilePopupAndExternalCloseIntegration(t *testing.T) {
+	chrome := os.Getenv("KITTY_BROWSE_CHROME")
+	if chrome == "" {
+		t.Skip("set KITTY_BROWSE_CHROME to run this integration test")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.URL.Path == "/popup" {
+			_, _ = fmt.Fprint(w, `<!doctype html><title>popup</title><script>window.popupMemory=42</script><body>popup</body>`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `<!doctype html><title>opener</title><body><button id="popup" onclick="window.open('/popup','popup-test')">open</button></body>`)
+	}))
+	defer server.Close()
+	alloc, cancel := integrationAllocator(t, chrome)
+	defer cancel()
+	tabs, err := OpenTabs(alloc, server.URL, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tabs.Close()
+	originalID := tabs.Active().TargetID()
+	if err := chromedp.Do(tabs.Active().Context(), chromedp.Click("#popup")); err != nil {
+		t.Fatal(err)
+	}
+	waitForReconcile(t, tabs, func() bool { return len(tabs.Sessions()) == 2 })
+	if tabs.Active().URL() != server.URL+"/popup" {
+		t.Fatalf("reconciled active popup URL = %q", tabs.Active().URL())
+	}
+	value, err := chromedp.Run(tabs.Active().Context(), chromedp.Evaluate[int](`window.popupMemory`))
+	if err != nil || value != 42 {
+		t.Fatalf("popup state was reloaded/lost: value=%d err=%v", value, err)
+	}
+	if _, err := chromedp.Run(tabs.Active().Context(), chromedp.Evaluate[any](`window.close()`)); err != nil {
+		t.Fatal(err)
+	}
+	waitForReconcile(t, tabs, func() bool { return len(tabs.Sessions()) == 1 })
+	if tabs.Active().TargetID() != originalID {
+		t.Fatal("closing popup did not restore the existing user tab")
+	}
+	if _, err := chromedp.CallBrowser(tabs.anchor.Context(), cdptarget.CloseTarget,
+		cdptarget.CloseTargetParams{TargetID: cdptarget.ID(originalID)}); err != nil {
+		t.Fatal(err)
+	}
+	waitForReconcile(t, tabs, func() bool {
+		return len(tabs.Sessions()) == 1 && tabs.Active().URL() == "about:blank" && tabs.Active().TargetID() != originalID
+	})
+}
+
+func waitForReconcile(t *testing.T, tabs *Tabs, done func() bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, err := tabs.Reconcile(ctx)
+		if err == nil && done() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("reconcile did not reach expected state: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 

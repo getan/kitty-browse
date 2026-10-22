@@ -22,12 +22,14 @@ const syncTimeout = time.Second
 
 // Session is one headless Chromium tab.
 type Session struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	url       string
-	history   []string
-	index     int
-	closeOnce sync.Once
+	ctx          context.Context
+	cancel       context.CancelFunc
+	url          string
+	history      []string
+	index        int
+	closeOnce    sync.Once
+	automationMu sync.Mutex
+	automation   *automationState
 }
 
 // Open starts Chromium, navigates to target and waits for the document body.
@@ -57,6 +59,10 @@ func open(parent, operation context.Context, target string, timeout time.Duratio
 		return nil, fmt.Errorf("start browser: %w", err)
 	}
 	if err := applyIdentity(ctx); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if err := s.StartObservation(); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -257,7 +263,8 @@ func (s *Session) Sync(ctx context.Context) (title string, err error) {
 func (s *Session) Close() {
 	if s != nil && s.cancel != nil {
 		s.closeOnce.Do(func() {
-			if s.ctx != nil && s.ctx.Err() == nil {
+			s.StopObservation()
+			if s.ctx != nil && s.ctx.Err() == nil && chromedp.FromContext(s.ctx) != nil && chromedp.FromContext(s.ctx).Browser != nil {
 				ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 				_ = chromedp.Cancel(ctx)
 				cancel()

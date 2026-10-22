@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
+	cdptarget "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -176,6 +178,166 @@ func (t *Tabs) Screenshot(ctx context.Context, fullPage bool) ([]byte, error) {
 		return nil, ErrTabsClosed
 	}
 	return t.sessions[t.index].Screenshot(ctx, fullPage)
+}
+
+// Reconcile synchronizes user-visible tabs with Chromium's current page
+// targets. It attaches window.open/automation-created pages without navigating
+// them, removes targets closed by another CDP client, and never exposes the
+// private browser-lifetime anchor. It returns whether the tab collection or
+// selection changed.
+//
+// Reconcile is intended to run on the UI goroutine. It still takes the Tabs
+// write lock so concurrent control-server screenshots cannot race an attach,
+// removal, or active-tab change. Newly discovered pages are selected.
+func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
+	if t == nil {
+		return false, ErrTabsClosed
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.anchor == nil {
+		return false, ErrTabsClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	queryCtx, cancel := context.WithTimeout(t.anchor.Context(), syncTimeout)
+	stop := context.AfterFunc(ctx, cancel)
+	infos, err := chromedp.Targets(queryCtx)
+	stop()
+	cancel()
+	if err != nil {
+		return false, fmt.Errorf("reconcile browser targets: %w", err)
+	}
+
+	anchorID := t.anchor.TargetID()
+	pages := make([]*cdptarget.Info, 0, len(infos))
+	live := make(map[string]bool, len(infos))
+	for _, info := range infos {
+		if !userPageTarget(info, anchorID) {
+			continue
+		}
+		id := string(info.TargetID)
+		live[id] = true
+		pages = append(pages, info)
+	}
+
+	oldActive := t.activeLocked()
+	known := make(map[string]bool, len(t.sessions))
+	survivors := make([]*Session, 0, len(t.sessions)+len(pages))
+	removed := make([]*Session, 0)
+	for _, session := range t.sessions {
+		id := session.TargetID()
+		known[id] = true
+		if id != "" && live[id] {
+			survivors = append(survivors, session)
+		} else {
+			removed = append(removed, session)
+		}
+	}
+
+	added := make([]*Session, 0)
+	for _, info := range pages {
+		if known[string(info.TargetID)] {
+			continue
+		}
+		session, err := attachTarget(t.anchor.Context(), info)
+		if err != nil {
+			for _, attached := range added {
+				attached.Close()
+			}
+			return false, fmt.Errorf("attach discovered tab %s: %w", info.TargetID, err)
+		}
+		added = append(added, session)
+		survivors = append(survivors, session)
+	}
+
+	// If an external client closed every user page, immediately restore a real
+	// user tab. The anchor stays private and exists only to keep Chromium alive.
+	if len(survivors) == 0 {
+		session, err := open(t.anchor.Context(), ctx, "about:blank", syncTimeout)
+		if err != nil {
+			return false, fmt.Errorf("restore blank tab: %w", err)
+		}
+		added = append(added, session)
+		survivors = append(survivors, session)
+	}
+
+	changed := len(removed) > 0 || len(added) > 0
+	newIndex := -1
+	if len(added) > 0 {
+		newIndex = len(survivors) - 1
+		if err := bringToFront(survivors[newIndex]); err != nil {
+			for _, attached := range added {
+				attached.Close()
+			}
+			return false, err
+		}
+	} else {
+		for i, session := range survivors {
+			if session == oldActive {
+				newIndex = i
+				break
+			}
+		}
+		if newIndex < 0 {
+			newIndex = min(t.index, len(survivors)-1)
+			changed = true
+		}
+	}
+
+	t.sessions = survivors
+	t.index = newIndex
+	for _, session := range removed {
+		session.Close()
+	}
+	return changed, nil
+}
+
+func (t *Tabs) activeLocked() *Session {
+	if t.index < 0 || t.index >= len(t.sessions) {
+		return nil
+	}
+	return t.sessions[t.index]
+}
+
+func userPageTarget(info *cdptarget.Info, anchorID string) bool {
+	if info == nil || info.Type != "page" || string(info.TargetID) == anchorID {
+		return false
+	}
+	// Extension and DevTools frontend pages are implementation UI, not browsing
+	// tabs. Workers and iframes are already excluded by the exact type check.
+	return !strings.HasPrefix(info.URL, "chrome-extension://") &&
+		!strings.HasPrefix(info.URL, "devtools://")
+}
+
+func attachTarget(parent context.Context, info *cdptarget.Info) (*Session, error) {
+	ctx, cancel := chromedp.NewContext(parent, chromedp.WithTargetID(info.TargetID))
+	session := &Session{
+		ctx:     ctx,
+		cancel:  cancel,
+		url:     info.URL,
+		history: []string{info.URL},
+	}
+	// An empty action binds to the existing target. Deliberately do not Navigate,
+	// Reload, or WaitReady: a popup's JS state and in-progress load must survive.
+	if err := chromedp.Do(ctx); err != nil {
+		session.Close()
+		return nil, err
+	}
+	if err := applyIdentity(ctx); err != nil {
+		session.Close()
+		return nil, err
+	}
+	if err := session.StartObservation(); err != nil {
+		session.Close()
+		return nil, err
+	}
+	// TargetCreated can arrive before the popup's first URL is committed. Refresh
+	// from Chromium after attach so the UI/API does not advertise an empty URL.
+	_, _ = session.Sync(parent)
+	return session, nil
 }
 
 // Close closes all user tabs and then the private browser anchor.
