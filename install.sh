@@ -37,6 +37,28 @@ else
 	err "需要 curl 或 wget"
 fi
 
+case "$DL" in
+curl*) DL_KIND="curl" ;;
+*) DL_KIND="wget" ;;
+esac
+
+# api_get <url>：只用于 api.github.com。带 token 时请求头必须作为一个完整参数
+# 传下去——曾经写成 api_auth='-H Authorization:\ Bearer\ $TOKEN' 再不加引号展开，
+# 结果拆成 4 个参数：curl 把 token 当成 URL，既认证失败，又把凭据送进了 DNS 查询。
+# 镜像永远走 $DL，不带任何凭据。
+api_get() {
+	url=$1
+	if [ -n "${GITHUB_TOKEN:-}" ]; then
+		if [ "$DL_KIND" = "curl" ]; then
+			curl -fsSL --connect-timeout 5 -H "Authorization: Bearer $GITHUB_TOKEN" "$url"
+		else
+			wget -q --timeout=20 --header="Authorization: Bearer $GITHUB_TOKEN" -O - "$url"
+		fi
+		return
+	fi
+	$DL "$url"
+}
+
 mirrors() {
 	case "${KITTY_BROWSE_MIRROR:-}" in
 	"") printf '%s\n' "https://ghfast.top/ https://ghproxy.net/ https://gh-proxy.com/ https://gh.zwy.one/" ;;
@@ -179,7 +201,7 @@ tag_of() {
 # resolve_version 依次尝试直连与镜像，返回第一个能解析出的 tag。
 # GitHub token 只发给 api.github.com：镜像会看到请求头，不能让它拿到凭据。
 resolve_version() {
-	if json=$($DL "$API_URL" $api_auth 2>/dev/null); then
+	if json=$(api_get "$API_URL" 2>/dev/null); then
 		if tag=$(tag_of "$json") && [ -n "$tag" ]; then
 			printf '%s' "$tag"
 			return 0
@@ -205,8 +227,6 @@ resolve_version() {
 }
 
 VERSION="${KITTY_BROWSE_VERSION:-}"
-api_auth=""
-[ -n "${GITHUB_TOKEN:-}" ] && api_auth="-H Authorization:\ Bearer\ $GITHUB_TOKEN"
 if [ -z "$VERSION" ]; then
 	info "查询最新 release ..."
 	VERSION=$(resolve_version) || \
