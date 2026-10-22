@@ -28,6 +28,10 @@ type Store struct {
 	state State
 }
 
+// NewMemory creates an isolated, non-persistent store for private browsing. It
+// neither reads existing history/bookmarks nor writes browsing activity to disk.
+func NewMemory() *Store { return &Store{} }
+
 // DefaultPath returns $XDG_CONFIG_HOME/kitty-browse/state.json on Unix-like
 // systems, falling back to the user config directory.
 func DefaultPath() (string, error) {

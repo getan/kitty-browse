@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/getan/kitty-browse/internal/browser"
 	"github.com/getan/kitty-browse/internal/control"
 	"github.com/getan/kitty-browse/internal/history"
@@ -54,6 +53,10 @@ func main() {
 		chrome      = flag.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
 		socket      = flag.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional Unix socket for screenshots of this running browser")
 		shotDir     = flag.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
+		profileDir  = flag.String("profile-dir", "", "dedicated persistent Chromium profile directory (default: user config directory)")
+		private     = flag.Bool("private", false, "use a temporary profile and in-memory history; do not retain browsing data")
+		stealth     = flag.Bool("stealth", false, "experimental desktop UA and reduced automation markers; not a detection-bypass guarantee")
+		userAgent   = flag.String("user-agent", "", "optional explicit User-Agent; default: native Chromium, or desktop UA with -stealth")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "usage: %s [flags] [url]\n", os.Args[0])
@@ -66,7 +69,7 @@ func main() {
 		log.Fatal("fps must be finite and 0.1..240; scroll-lines must be finite and 0.1..100")
 	}
 
-	if path := os.Getenv("KITTY_BROWSE_DEBUG"); path != "" {
+	if path := os.Getenv("KITTY_BROWSE_DEBUG"); path != "" && !*private {
 		if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
 			debugLog = log.New(f, "", log.Lmicroseconds)
 			defer f.Close()
@@ -82,16 +85,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	browserCtx := ctx
-	if *chrome != "" {
-		opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(*chrome))
-		allocCtx, closeAlloc := chromedp.NewExecAllocator(ctx, opts...)
-		defer closeAlloc()
-		browserCtx = allocCtx
+	browserCtx, closeAlloc, profile, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
+		ExecutablePath: *chrome, ProfileDir: *profileDir, Private: *private,
+		Stealth: *stealth, UserAgent: *userAgent,
+	})
+	if err != nil {
+		log.Fatal(err)
 	}
-	debugf("starting browser executable=%q", *chrome)
+	defer closeAlloc()
+	debugf("starting browser executable=%q profile=%q private=%v stealth=%v", *chrome, profile.Dir, profile.Private, *stealth)
 	tabs, err := browser.OpenTabs(browserCtx, target, *load)
 	if err != nil {
+		closeAlloc()
 		log.Fatal(err)
 	}
 	defer tabs.Close()
@@ -101,15 +106,20 @@ func main() {
 	pane := tuios.FromEnv(nil)
 	defer pane.Clear()
 
-	statePath, pathErr := history.DefaultPath()
-	store, err := history.Open(statePath)
-	if pathErr != nil || err != nil {
-		store, _ = history.Open("")
+	store := history.NewMemory()
+	if !profile.Private {
+		if loaded, err := history.Open(profile.StatePath); err == nil {
+			store = loaded
+		} else {
+			debugf("profile history unavailable: %v", err)
+		}
 	}
 	_ = store.Record(sess.URL())
 
 	screen, err := term.Open(os.Stdin, os.Stdout)
 	if err != nil {
+		tabs.Close()
+		closeAlloc()
 		log.Fatal(err)
 	}
 	defer screen.Close()
@@ -134,6 +144,8 @@ func main() {
 		screen.Header("kitty-browse: " + err.Error())
 		time.Sleep(2 * time.Second)
 		screen.Close()
+		tabs.Close()
+		closeAlloc()
 		if errors.Is(err, render.ErrNoGraphics) {
 			log.Fatal("this terminal has no Kitty/iTerm2/Sixel graphics support")
 		}
@@ -156,6 +168,7 @@ func main() {
 	}
 
 	model := ui.New(sess.URL())
+	model.Private = profile.Private
 	tabModels := []*ui.Model{model}
 	titles := map[*browser.Session]string{}
 	cacheTabTitle(titles, sess)
@@ -357,6 +370,7 @@ func main() {
 					model.Status = err.Error()
 				} else {
 					fresh := ui.New("about:blank")
+					fresh.Private = profile.Private
 					fresh.Editing, fresh.Address = true, ""
 					tabModels = append(tabModels, fresh)
 					if err := activateTab(); err != nil {

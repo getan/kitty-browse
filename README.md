@@ -109,6 +109,76 @@ go run ./cmd/kitty-browse "file://$PWD/internal/render/testdata/page.html"
 The test checks rendered JPEG screencast frames, PNG still capture with an
 ordinary caller context, and that navigation leaves the browser alive.
 
+## Profiles, private browsing and optional identity compatibility
+
+Normal launches now use a **dedicated persistent Chromium profile**. Nothing is
+imported from personal Chrome/Edge/Brave profiles or earlier temporary sessions.
+Default locations:
+
+- macOS: `~/Library/Application Support/kitty-browse/profiles/default`
+- Linux: `$XDG_CONFIG_HOME/kitty-browse/profiles/default`, normally
+  `~/.config/kitty-browse/profiles/default`
+- An explicit `XDG_CONFIG_HOME` overrides the base directory on either platform.
+
+Use an independent profile for each account/work context:
+
+```bash
+./bin/kitty-browse -profile-dir "$PWD/.local/profiles/work" https://example.com
+./bin/kitty-browse -private https://example.com
+./bin/kitty-browse -private -stealth https://example.com
+```
+
+The profile directory is private (`0700`) and process-locked on macOS/Linux. Two
+running instances must not use the same profile; use another directory or private
+mode instead. The program never deletes Chromium's own singleton lock to force
+access to an occupied profile. Cookies/localStorage and profile-local history /
+bookmarks (`kitty-browse-state.json`) can survive a normal close and restart.
+Session-only cookies, expiry, logout and server-side session policies still apply:
+a persistent profile does not guarantee that every site keeps you logged in.
+
+Treat the profile as login credentials: do not commit it, share it or point the
+application at a personal browser's profile. Chromium allocator defaults may use
+basic password/mock-keychain storage; filesystem permissions are not a guarantee
+of credential encryption at rest. Keep project-local profiles under `.local/`.
+
+`-private` creates an isolated temporary Chromium profile, removed on normal exit.
+It neither reads nor writes normal profile cookies or application history and
+bookmarks; those application lists are memory-only in private mode. The footer
+shows `PRIVATE`, and `KITTY_BROWSE_DEBUG` file logging is disabled. Combining
+`-private` with an explicit `-profile-dir` is an error, not an implicit fallback.
+Tabs in one private process share that process's private session.
+
+Private mode is **not anonymity or secure erasure**. Temporary browser files may
+exist while it runs; crashes/forced termination may leave remnants. Explicitly
+saved screenshots, shell/terminal/tuios logs, OS traces and the site's own records
+are outside this cleanup guarantee. The old global history file is not migrated
+automatically into the new per-profile stores.
+
+### `-stealth` and User-Agent
+
+Without identity flags, Chromium's normal headless identity is left unchanged.
+`-stealth` is an **opt-in, experimental compatibility mode**, not a guarantee of
+passing anti-bot systems. It:
+
+- derives UA from the actual running Chromium, changing only `HeadlessChrome/`
+  to `Chrome/`, without inventing a browser version or OS;
+- aligns the HTTP UA and `navigator.userAgent` through per-tab CDP configuration;
+- disables the automation switch / Blink `AutomationControlled` marker, so the
+  normal `navigator.webdriver` value is not `true`;
+- preserves native UA Client Hints metadata when it is available, normalizing the
+  headless brand. If an initial target cannot supply it, it omits those hints
+  rather than fabricating hardware/platform details.
+
+`-user-agent '...'` provides an explicit override and takes priority over the
+derived UA. For arbitrary custom strings, Client Hints are omitted to avoid
+attaching unrelated real-Chromium metadata. Prefer the matching-version derived
+UA unless testing a specific compatibility issue.
+
+This does not randomize fingerprints, spoof all graphics/plugins/devices, rotate
+IPs, defeat challenges/captchas, or manufacture human behavior. The normal UI is
+already driven by the user's clicks and typing; adding random delays does not
+make automation genuinely human. Respect each site's access rules and limits.
+
 ## Controls
 
 The top **two rows are mouse-clickable TUI controls**, not part of the webpage:
@@ -160,6 +230,10 @@ Useful flags:
 -chrome     Chromium executable path (default: KITTY_BROWSE_CHROME, then auto-detect)
 -control-socket optional local Unix socket for screenshots of this live browser
 -screenshot-dir hotkey screenshot directory (default .local/screenshots)
+-profile-dir dedicated persistent profile (default: user config directory)
+-private    isolated temporary profile and memory-only application history
+-stealth    optional desktop-UA / reduced automation markers (experimental)
+-user-agent explicit UA override (otherwise native or -stealth-derived)
 ```
 
 ## Screenshots of the live page
@@ -209,6 +283,7 @@ On macOS keep the socket path short enough for the Unix socket path limit.
 - [x] Optional `tuios` pane integration
 - [x] Viewport/full-page screenshots of the live tab, via hotkeys or CLI
 - [x] Clickable tab strip, address/navigation toolbar, and real Chromium tabs
+- [x] Dedicated persistent profiles, private sessions and opt-in identity compatibility
 
 ## Design notes
 

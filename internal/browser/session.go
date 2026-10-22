@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -21,11 +22,12 @@ const syncTimeout = time.Second
 
 // Session is one headless Chromium tab.
 type Session struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	url     string
-	history []string
-	index   int
+	ctx       context.Context
+	cancel    context.CancelFunc
+	url       string
+	history   []string
+	index     int
+	closeOnce sync.Once
 }
 
 // Open starts Chromium, navigates to target and waits for the document body.
@@ -53,6 +55,10 @@ func open(parent, operation context.Context, target string, timeout time.Duratio
 	if err := chromedp.Do(ctx); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("start browser: %w", err)
+	}
+	if err := applyIdentity(ctx); err != nil {
+		s.Close()
+		return nil, err
 	}
 	if err := s.load(operation, target, timeout); err != nil {
 		s.Close()
@@ -246,11 +252,18 @@ func (s *Session) Sync(ctx context.Context) (title string, err error) {
 	return entry.Title, nil
 }
 
-// Close closes this tab. If the Session is the root session which started
-// Chromium, it also stops Chromium and its child processes.
+// Close closes this tab. A root session closes Chromium gracefully so persistent
+// cookies/storage can be flushed before the allocator releases the profile lock.
 func (s *Session) Close() {
 	if s != nil && s.cancel != nil {
-		s.cancel()
+		s.closeOnce.Do(func() {
+			if s.ctx != nil && s.ctx.Err() == nil {
+				ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+				_ = chromedp.Cancel(ctx)
+				cancel()
+			}
+			s.cancel()
+		})
 	}
 }
 

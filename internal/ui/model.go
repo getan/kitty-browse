@@ -62,6 +62,7 @@ type Model struct {
 	ActiveTab    int
 	CanGoBack    bool
 	CanGoForward bool
+	Private      bool
 
 	// replaceAddress records the selection made by clicking the address field.
 	// The next typed character replaces the selection rather than appending.
@@ -132,6 +133,14 @@ func (m *Model) Footer(bookmarked bool) string {
 	if m == nil {
 		return ""
 	}
+	line := m.footer(bookmarked)
+	if m.Private {
+		return "PRIVATE · " + line
+	}
+	return line
+}
+
+func (m *Model) footer(bookmarked bool) string {
 	switch {
 	case m.Status != "":
 		return m.Status

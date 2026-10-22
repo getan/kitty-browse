@@ -172,3 +172,14 @@ func TestUnicodeAddressBackspaceAndTextView(t *testing.T) {
 		t.Fatalf("CJK text-mode cell clipping = %#v", view)
 	}
 }
+
+func TestPrivateModeIsAlwaysVisibleInFooter(t *testing.T) {
+	m := New("https://example.com")
+	m.Private = true
+	for _, status := range []string{"", "saved screenshot.png", "navigation error"} {
+		m.Status = status
+		if got := m.Footer(false); !strings.HasPrefix(got, "PRIVATE · ") || status != "" && !strings.Contains(got, status) {
+			t.Fatalf("private footer = %q", got)
+		}
+	}
+}
