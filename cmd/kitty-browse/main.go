@@ -38,6 +38,9 @@ func debugf(format string, args ...any) {
 }
 
 func main() {
+	if handleVersion(os.Args[1:]) {
+		return
+	}
 	if len(os.Args) > 1 {
 		var err error
 		command := true

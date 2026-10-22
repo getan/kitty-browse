@@ -1,0 +1,53 @@
+# goreleaser 配置：构建跨平台二进制、打包、生成 checksums、发布到 GitHub Release。
+# 与 golder 的 .goreleaser.yaml 保持同一套命名，install.sh 才能用同一段解析逻辑。
+#
+# 本地校验： goreleaser check
+# 本地试跑（不发布）： goreleaser release --snapshot --clean
+# 正式发布： 打 tag 后 `git push --tags`，CI 触发 `goreleaser release --clean`
+version: 2
+
+project_name: kitty-browse
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kitty-browse
+    main: ./cmd/kitty-browse
+    binary: kitty-browse
+    # 纯 Go：Chromium 由 chromedp 在运行时启动，不参与构建。
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: kitty-browse
+    ids:
+      - kitty-browse
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}Darwin
+      {{- else if eq .Os "linux" }}Linux
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
