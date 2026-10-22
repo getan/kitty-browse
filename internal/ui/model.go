@@ -7,6 +7,7 @@ import (
 
 	"github.com/getan/kitty-browse/internal/browser"
 	"github.com/getan/kitty-browse/internal/term"
+	"github.com/getan/kitty-browse/internal/textutil"
 )
 
 // ActionKind is a command the caller should run against the browser.
@@ -180,10 +181,7 @@ func (m *Model) Handle(ev term.Event) Action {
 				m.replaceAddress = false
 				break
 			}
-			r := []rune(m.Address)
-			if len(r) > 0 {
-				m.Address = string(r[:len(r)-1])
-			}
+			m.Address = textutil.DropLast(m.Address)
 		case term.KeyText:
 			if m.replaceAddress {
 				m.Address = string(ev.Rune)
@@ -422,11 +420,11 @@ func (m *Model) TextView(rows, width int) []string {
 	end := min(m.TextTop+rows, len(m.TextLines))
 	out := make([]string, 0, end-m.TextTop)
 	for _, line := range m.TextLines[m.TextTop:end] {
-		r := []rune(line)
-		if width > 0 && len(r) > width {
-			r = r[:width]
+		line = textutil.Sanitize(line)
+		if width > 0 {
+			line = textutil.Clip(line, width)
 		}
-		out = append(out, string(r))
+		out = append(out, line)
 	}
 	return out
 }

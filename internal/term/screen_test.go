@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/getan/kitty-browse/internal/textutil"
 )
 
 func TestTerminalSizeRowsAndColumns(t *testing.T) {
@@ -28,6 +31,18 @@ func TestTerminalSizeError(t *testing.T) {
 	_, _, err := terminalSize(0, func(int) (int, int, error) { return 0, 0, want })
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestChineseStatusFitsCellWidth(t *testing.T) {
+	if got := truncate("中文abcdef", 5); got != "中文…" {
+		t.Fatalf("Unicode footer truncation = %q", got)
+	}
+	for width := 0; width < 24; width++ {
+		got := truncate("已保存：截图👩🏽‍💻中文.png\x1b[31m", width)
+		if !utf8.ValidString(got) || textutil.Width(got) > width {
+			t.Fatalf("status overflows %d cells: %q", width, got)
+		}
 	}
 }
 

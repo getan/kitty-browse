@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 
+	"github.com/getan/kitty-browse/internal/textutil"
 	xterm "golang.org/x/term"
 )
 
@@ -182,14 +182,5 @@ func (s *Screen) clearBodyLocked() {
 }
 
 func truncate(s string, cols int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	r := []rune(s)
-	if len(r) <= cols {
-		return s
-	}
-	if cols <= 1 {
-		return string(r[:cols])
-	}
-	return string(r[:cols-1]) + "…"
+	return textutil.Truncate(s, cols)
 }

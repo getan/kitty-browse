@@ -4,8 +4,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/getan/kitty-browse/internal/term"
+	"github.com/getan/kitty-browse/internal/textutil"
 )
 
 var ansiColor = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -92,8 +94,8 @@ func TestChromeWidthAndTitleSanitizing(t *testing.T) {
 		}
 		for _, row := range rows {
 			visible := ansiColor.ReplaceAllString(row, "")
-			if len(visible) > cols {
-				t.Fatalf("cols %d overflow: %q (%d)", cols, visible, len(visible))
+			if textutil.Width(visible) > cols || !utf8.ValidString(visible) {
+				t.Fatalf("cols %d overflow/invalid UTF-8: %q (%d cells)", cols, visible, textutil.Width(visible))
 			}
 			if strings.Contains(row, "\x1b[31m") || strings.Contains(row, "\n") {
 				t.Fatalf("page title injected control sequence: %q", row)
@@ -108,5 +110,40 @@ func TestChromeAddressBackspaceClearsSelection(t *testing.T) {
 	m.Handle(term.Event{Kind: term.KeyBackspace})
 	if m.Address != "" {
 		t.Fatalf("Backspace left address %q", m.Address)
+	}
+}
+
+func TestChineseTabsKeepTextAndCellHitboxes(t *testing.T) {
+	m := New("https://www.baidu.com/")
+	m.Tabs = []TabInfo{{Title: "百度一下，你就知道"}, {Title: "中文测试 👩🏽‍💻 e\u0301"}}
+	visible := ansiColor.ReplaceAllString(m.Chrome(107)[0], "")
+	if !strings.Contains(visible, "百度一下，你就知道") || strings.Contains(visible, "?") || !utf8.ValidString(visible) {
+		t.Fatalf("Chinese tab corrupted: %q", visible)
+	}
+	for i, col := range []int{23, 47} {
+		got := m.HandleMouse(107, term.MouseEvent{Button: 0, Col: col, Row: 1, Press: true})
+		if got.Kind != ActionCloseTab || got.Index != i {
+			t.Fatalf("close at cell %d = %+v", col, got)
+		}
+	}
+	for cols := 1; cols <= 120; cols++ {
+		for _, row := range m.Chrome(cols) {
+			visible := ansiColor.ReplaceAllString(row, "")
+			if !utf8.ValidString(visible) || textutil.Width(visible) > cols || strings.ContainsRune(visible, '\ufffd') {
+				t.Fatalf("cols=%d invalid Unicode/clipping: %q", cols, visible)
+			}
+		}
+	}
+}
+
+func TestChineseAddressDoesNotMoveGoAndShotButtons(t *testing.T) {
+	m := New("https://例子.测试/中文路径")
+	visible := ansiColor.ReplaceAllString(m.Chrome(107)[1], "")
+	if !strings.Contains(visible, "例子.测试/中文路径") || textutil.Width(visible) != 107 {
+		t.Fatalf("Unicode address field = %q", visible)
+	}
+	got := m.HandleMouse(107, term.MouseEvent{Button: 0, Col: 103, Row: 2, Press: true})
+	if got.Kind != ActionScreenshot {
+		t.Fatalf("Shot moved after Unicode address: %+v", got)
 	}
 }

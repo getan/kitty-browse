@@ -156,3 +156,19 @@ func TestScreenshotHotkeys(t *testing.T) {
 		t.Fatalf("hint selection intercepted as screenshot: %+v", got)
 	}
 }
+
+func TestUnicodeAddressBackspaceAndTextView(t *testing.T) {
+	m := New("https://example.com")
+	m.Editing, m.Address = true, "百度👩🏽‍💻e\u0301"
+	for _, want := range []string{"百度👩🏽‍💻", "百度", "百", ""} {
+		m.Handle(term.Event{Kind: term.KeyBackspace})
+		if m.Address != want {
+			t.Fatalf("grapheme backspace = %q, want %q", m.Address, want)
+		}
+	}
+	m.SetText("中文abcdef\n百度一下你就知道")
+	view := m.TextView(2, 5)
+	if len(view) != 2 || view[0] != "中文a" || view[1] != "百度" {
+		t.Fatalf("CJK text-mode cell clipping = %#v", view)
+	}
+}

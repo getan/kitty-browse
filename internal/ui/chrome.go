@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/getan/kitty-browse/internal/term"
+	"github.com/getan/kitty-browse/internal/textutil"
 )
 
 // ChromeRows is the number of terminal rows reserved for browser chrome.
@@ -20,9 +21,8 @@ type chromePart struct {
 	end     int // one-based visible columns, inclusive
 }
 
-// Chrome renders the tab strip and navigation/address toolbar. All user or
-// page supplied text is converted to printable, single-column ASCII before it
-// is placed between ANSI truecolor sequences.
+// Chrome renders the tab strip and toolbar. Untrusted text is sanitized, but
+// Unicode is preserved; layout and mouse hitboxes use display cells, not bytes.
 func (m *Model) Chrome(cols int) []string {
 	if cols <= 0 || m == nil {
 		return []string{"", ""}
@@ -77,9 +77,9 @@ func (m *Model) chromeLayout(cols int) [2][]chromePart {
 		}
 	}
 	for i := 0; i < tabCount && tabWidth >= 4; i++ {
-		label := tabLabel(m.Tabs[i], i, tabWidth)
-		// The penultimate character is a separately clickable close target.
-		rows[0] = appendPart(rows[0], label[:tabWidth-2], ActionSelectTab, i, true, i == m.ActiveTab)
+		// Keep the close target separate: byte slicing a label at a cell
+		// offset would corrupt Chinese or split an emoji grapheme.
+		rows[0] = appendPart(rows[0], tabBody(m.Tabs[i], i, tabWidth), ActionSelectTab, i, true, i == m.ActiveTab)
 		rows[0] = appendPart(rows[0], "x", ActionCloseTab, i, true, i == m.ActiveTab)
 		rows[0] = appendPart(rows[0], "]", ActionSelectTab, i, true, i == m.ActiveTab)
 	}
@@ -102,7 +102,7 @@ func (m *Model) chromeLayout(cols int) [2][]chromePart {
 	if m.Editing {
 		address = m.Address
 	}
-	rows[1] = appendPart(rows[1], fitASCII(printableASCII(address), addressWidth), ActionEditAddress, 0, addressWidth > 0, m.Editing)
+	rows[1] = appendPart(rows[1], textutil.Fit(textutil.Sanitize(address), addressWidth), ActionEditAddress, 0, addressWidth > 0, m.Editing)
 	rows[1] = appendPart(rows[1], "[Go]", ActionNavigate, 0, true, false)
 	rows[1] = appendPart(rows[1], " ", ActionNone, 0, false, false)
 	rows[1] = appendPart(rows[1], "[Shot]", ActionScreenshot, 0, true, false)
@@ -117,7 +117,7 @@ func appendPart(parts []chromePart, text string, kind ActionKind, index int, ena
 	if len(parts) > 0 {
 		start = parts[len(parts)-1].end + 1
 	}
-	return append(parts, chromePart{text: text, kind: kind, index: index, enabled: enabled, active: active, start: start, end: start + len(text) - 1})
+	return append(parts, chromePart{text: text, kind: kind, index: index, enabled: enabled, active: active, start: start, end: start + textutil.Width(text) - 1})
 }
 
 func renderChrome(parts []chromePart, cols int) string {
@@ -127,8 +127,8 @@ func renderChrome(parts []chromePart, cols int) string {
 			break
 		}
 		text := part.text
-		if n := cols - part.start + 1; len(text) > n {
-			text = text[:n]
+		if n := cols - part.start + 1; textutil.Width(text) > n {
+			text = textutil.Clip(text, n)
 		}
 		bg, fg := "35;40;52", "230;235;245"
 		switch {
@@ -144,38 +144,11 @@ func renderChrome(parts []chromePart, cols int) string {
 	return out.String()
 }
 
-func tabLabel(tab TabInfo, index, width int) string {
+func tabBody(tab TabInfo, index, width int) string {
 	name := tab.Title
 	if name == "" {
 		name = tab.URL
 	}
-	middle := fmt.Sprintf("%d %s", index+1, printableASCII(name))
-	return "[" + fitASCII(middle, width-3) + "x]"
-}
-
-func fitASCII(s string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if len(s) > width {
-		s = s[:width]
-	}
-	if len(s) < width {
-		s += strings.Repeat(" ", width-len(s))
-	}
-	return s
-}
-
-// printableASCII prevents titles, URLs, tabs and newlines from becoming
-// terminal control input. Non-ASCII is represented safely in one cell.
-func printableASCII(s string) string {
-	var out strings.Builder
-	for _, r := range s {
-		if r >= 0x20 && r <= 0x7e {
-			out.WriteByte(byte(r))
-		} else {
-			out.WriteByte('?')
-		}
-	}
-	return out.String()
+	middle := fmt.Sprintf("%d %s", index+1, textutil.Sanitize(name))
+	return "[" + textutil.Fit(middle, width-3)
 }

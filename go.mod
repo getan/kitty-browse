@@ -6,6 +6,7 @@ require (
 	github.com/chromedp/cdproto v0.157.8
 	github.com/chromedp/chromedp v0.20.0
 	github.com/kenshaw/rasterm v0.1.17
+	github.com/rivo/uniseg v0.4.7
 	golang.org/x/term v0.44.0
 )
 

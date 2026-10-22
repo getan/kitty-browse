@@ -32,6 +32,48 @@ chromedp ──CDP screencast──> internal/render ──rasterm/Kitty──> 
   Sixel-capable terminal
 - Inside tmux, enable passthrough so the graphics escapes reach the terminal
 
+### Chinese / Unicode and portable fonts
+
+Tab titles, the address field, status and text mode preserve UTF-8. Their layout
+uses Unicode grapheme clusters and terminal-cell widths (CJK characters normally
+occupy two cells), not byte counts. Truncation and Backspace do not split an emoji
+or combining sequence. Untrusted terminal control/bidi formatting characters are
+still sanitized; Chinese is not replaced with `?`.
+
+There are **two separate font environments**:
+
+- **TUI labels** are drawn by the host terminal. Keep a normal monospace primary
+  font and allow a CJK fallback. macOS normally supplies PingFang SC automatically.
+- **Webpage pixels** are drawn by Chromium, using fonts installed where Chromium
+  runs. The program respects website CSS/webfonts and system fallback; it does
+  not force a font over every page or its icon fonts.
+
+For a common Linux setup, install **Noto CJK**. Debian/Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install --no-install-recommends fontconfig fonts-noto-cjk
+
+# The family must actually exist; fc-match alone can silently select another font.
+fc-list ':family=Noto Sans CJK SC' family file
+fc-list ':family=Noto Sans Mono CJK SC' family file
+fc-match -f '%{family[0]} | %{file}\n' 'sans-serif:lang=zh-cn'
+```
+
+Other Linux distributions provide equivalent `noto-fonts-cjk`/Noto CJK packages.
+For Linux Ghostty, an optional user-selected fallback configuration is:
+
+```ini
+font-family = ""
+font-family = "JetBrains Mono"
+font-family = "Noto Sans Mono CJK SC"
+```
+
+The application does not edit terminal/global font settings or bundle a large
+font file. With SSH, install the TUI fallback on the **terminal/client machine**
+and webpage fonts on the **Chromium/server machine**. Installing one does not
+fix missing glyphs in the other. Use a UTF-8 terminal/locale on Linux.
+
 ## Run
 
 ```bash
