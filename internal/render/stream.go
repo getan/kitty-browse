@@ -6,6 +6,7 @@ package render
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type Config struct {
 	Quality int
 	Width   int
 	Height  int
+	Cols    int
+	Rows    int
 	Encoder rasterm.Encoder
 }
 
@@ -41,6 +44,7 @@ type Stream struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	enc    rasterm.Encoder
+	kitty  *kittyEncoder
 	frames chan image.Image
 
 	wg      sync.WaitGroup
@@ -48,6 +52,8 @@ type Stream struct {
 	err     error
 	last    time.Time
 	stopped bool
+	width   int
+	height  int
 }
 
 // Start begins a screencast and starts Chromium if the context has none.
@@ -64,9 +70,11 @@ func Start(ctx context.Context, cfg Config) (*Stream, error) {
 	if cfg.Height <= 0 {
 		cfg.Height = 800
 	}
+	var kitty *kittyEncoder
 	if cfg.Encoder == nil {
+		kitty = &kittyEncoder{Cols: cfg.Cols, Rows: cfg.Rows}
 		cfg.Encoder = rasterm.NewDefaultEncoder(
-			rasterm.KittyEncoder{NoNewline: true},
+			kitty,
 			rasterm.ITermEncoder{NoNewline: true},
 			rasterm.SixelEncoder{NoNewline: true},
 		)
@@ -84,15 +92,16 @@ func Start(ctx context.Context, cfg Config) (*Stream, error) {
 	if _, err := chromedp.Call(rctx, page.StartScreencast, page.StartScreencastParams{
 		Format:        page.StartScreencastFormatJpeg,
 		Quality:       &quality,
-		MaxWidth:      int64(cfg.Width),
-		MaxHeight:     int64(cfg.Height),
 		EveryNthFrame: 1,
 	}); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start screencast: %w", err)
 	}
 
-	s := &Stream{ctx: ctx, cancel: cancel, enc: cfg.Encoder, frames: make(chan image.Image, 1)}
+	s := &Stream{
+		ctx: ctx, cancel: cancel, enc: cfg.Encoder, kitty: kitty, frames: make(chan image.Image, 1),
+		width: cfg.Width, height: cfg.Height,
+	}
 	s.wg.Add(1)
 	go s.read(rctx, frames)
 	return s, nil
@@ -107,18 +116,51 @@ func (s *Stream) Frames() <-chan image.Image {
 	return s.frames
 }
 
-// Draw clears the browser area and emits one image. The caller supplies the
-// writer that is positioned at row 2.
+// SetViewportSize updates the expected pane viewport after a resize. Chromium
+// can emit intermediate surfaces during resize and full-page screenshots;
+// those must never temporarily replace the visible pane with a scaled sliver.
+func (s *Stream) SetViewportSize(width, height int) {
+	s.mu.Lock()
+	s.width, s.height = width, height
+	s.mu.Unlock()
+}
+
+// SetCellSize updates the terminal-cell extent of the image placement. It is
+// independent of the raster dimensions, so custom-size screenshots still fill
+// the pane exactly. Custom encoders and non-Kitty fallbacks are unaffected.
+func (s *Stream) SetCellSize(cols, rows int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.kitty != nil {
+		s.kitty.Cols, s.kitty.Rows = cols, rows
+	}
+	s.mu.Unlock()
+}
+
+func (s *Stream) matchesViewport(width, height int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return width == s.width && height == s.height
+}
+
+// Draw replaces the page image in place. Do not delete the old placement first:
+// the host must keep displaying it while the next frame is being transmitted.
 func (s *Stream) Draw(w io.Writer, img image.Image) error {
 	if s == nil || img == nil {
 		return nil
 	}
-	// Reusing one image id is not enough on all terminals: delete the previous
-	// placement first, then display the new frame. Text on row 1 is untouched.
-	if _, err := io.WriteString(w, "\x1b_Ga=d,d=A,q=2;\x1b\\"); err != nil {
-		return err
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.enc.Encode(w, img)
+}
+
+// Clear removes only this browser's Kitty image, for mode changes and exit.
+// Normal frame updates must never call Clear.
+func (s *Stream) Clear(w io.Writer) error {
+	_, err := io.WriteString(w, "\x1b_Ga=d,d=I,i=1,q=2;\x1b\\")
+	return err
 }
 
 // Err returns the first transport/decode error.
@@ -131,7 +173,8 @@ func (s *Stream) Err() error {
 	return s.err
 }
 
-// LastFrame reports when the last screencast frame arrived.
+// LastFrame reports when the last changed screencast frame arrived. Repeated
+// frames caused by screenshot capture do not count as fresh page activity.
 func (s *Stream) LastFrame() time.Time {
 	if s == nil {
 		return time.Time{}
@@ -147,9 +190,16 @@ func (s *Stream) Still(ctx context.Context) (image.Image, error) {
 	if s == nil {
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Only the stream owns the CDP target. Callers may pass an ordinary
+	// cancellation context (the UI does), which has no chromedp context value.
+	callCtx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	defer cancel()
-	res, err := chromedp.Call(ctx, page.CaptureScreenshot, page.CaptureScreenshotParams{
+	stop := context.AfterFunc(ctx, cancel)
+	defer stop()
+	res, err := chromedp.Call(callCtx, page.CaptureScreenshot, page.CaptureScreenshotParams{
 		Format: page.CaptureScreenshotFormatPng,
 	})
 	if err != nil {
@@ -185,6 +235,8 @@ func (s *Stream) Stop() {
 
 func (s *Stream) read(ctx context.Context, frames iter.Seq2[page.EventScreencastFrame, error]) {
 	defer s.wg.Done()
+	var previous [sha256.Size]byte
+	var havePrevious bool
 	for ev, err := range frames {
 		if err != nil {
 			if ctx.Err() == nil {
@@ -200,11 +252,26 @@ func (s *Stream) read(ctx context.Context, frames iter.Seq2[page.EventScreencast
 			}
 			return
 		}
+		// Always ACK, even duplicate frames. CaptureScreenshot can cause an
+		// otherwise idle compositor to send the exact same JPEG again.
+		digest := sha256.Sum256(ev.Data)
+		if havePrevious && digest == previous {
+			continue
+		}
+		size, err := jpeg.DecodeConfig(bytes.NewReader(ev.Data))
+		if err != nil {
+			s.fail(fmt.Errorf("decode frame header: %w", err))
+			continue
+		}
+		if !s.matchesViewport(size.Width, size.Height) {
+			continue
+		}
 		img, err := jpeg.Decode(bytes.NewReader(ev.Data))
 		if err != nil {
 			s.fail(fmt.Errorf("decode frame: %w", err))
 			continue
 		}
+		previous, havePrevious = digest, true
 		s.mu.Lock()
 		s.last = time.Now()
 		s.mu.Unlock()

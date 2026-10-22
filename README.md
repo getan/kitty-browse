@@ -3,9 +3,9 @@
 A small Go terminal browser: real Chromium pixels in Kitty/iTerm2/Sixel
 terminals, without the Electron/Rust stack.
 
-> Status: functional prototype. Address bar, mouse, hints, history/bookmarks,
-> text fallback and optional tuios title reporting are implemented; tabs and
-> richer page controls are future work.
+> Status: functional prototype. Clickable tabs and navigation/address toolbar,
+> mouse, hints, history/bookmarks, screenshots, text fallback and optional tuios
+> title reporting are implemented; richer page input controls are future work.
 
 ## How it works
 
@@ -20,7 +20,7 @@ chromedp ──CDP screencast──> internal/render ──rasterm/Kitty──> 
 - `internal/render` is a small region-aware renderer derived from
   [`termcast`](https://github.com/chromedp/termcast): it streams Chromium's
   viewport to terminals that speak Kitty, iTerm2 or Sixel graphics, but leaves
-  row 1 free for the address bar.
+  two top rows for a tab strip and navigation/address toolbar.
 - The browser lifecycle stays separate so a future `tuios` pane or automation
   tool can reuse the same session.
 
@@ -39,7 +39,52 @@ go run ./cmd/kitty-browse https://example.com
 go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 ```
 
+### Project-local Chromium on macOS ARM64
+
+Use an explicit executable path when Chromium is not installed system-wide.
+This also works with the executable inside a Chrome, Brave or Edge `.app`.
+For the project-local Chromium installation used on this Mac:
+
+```bash
+export KITTY_BROWSE_CHROME="$PWD/.local/chromium/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+go run ./cmd/kitty-browse https://example.com
+# Or pass -chrome /absolute/path/to/Chromium without setting the environment.
+```
+
+The local install is Chromium **158.0.8117.0**, official Mac_Arm snapshot
+**1724382** from
+`https://storage.googleapis.com/chromium-browser-snapshots/Mac_Arm/1724382/chrome-mac.zip`.
+`.local/` is gitignored; no system browser or personal browser profile is used.
+Snapshots are development builds, not an automatically updated stable browser.
+
+To verify the whole CDP path without a terminal or external network:
+
+```bash
+make test-chromium  # uses KITTY_BROWSE_CHROME from above
+go run ./cmd/kitty-browse "file://$PWD/internal/render/testdata/page.html"
+```
+
+The test checks rendered JPEG screencast frames, PNG still capture with an
+ordinary caller context, and that navigation leaves the browser alive.
+
 ## Controls
+
+The top **two rows are mouse-clickable TUI controls**, not part of the webpage:
+
+```text
+[1 The Go Programming x][2 Example Domain x][+]
+[<] [>] [R] https://go.dev/                         [Go] [Shot]
+```
+
+- Click a tab to switch without reloading; `x` closes it; `[+]` opens a blank tab.
+- `[<]` / `[>]` use the current tab's actual Chromium history, including links
+  clicked inside pages. Disabled controls are dimmed.
+- `[R]` reloads. Click the address field, type a replacement URL, then click
+  `[Go]` or press Enter. `[Shot]` saves a screenshot of the current viewport.
+- Each tab retains its own page, scroll position and address-editor state.
+  The last tab remains open; use `q` to quit the browser.
+- These are styled terminal-cell buttons, not an embedded OS window. Page clicks
+  and scrolling are sent to Chromium. Existing keyboard controls remain available.
 
 | Key | Action |
 |---|---|
@@ -55,6 +100,8 @@ go run ./cmd/kitty-browse -fps 12 -quality 90 example.com
 | `B` | bookmarks picker |
 | `b` | toggle bookmark for the current page |
 | `t` | toggle readable text mode |
+| `s` / `S` | save viewport / full-page PNG screenshot |
+| `T` / `W` | new tab / close active tab (outside address editing) |
 | mouse click | left-click the page |
 | mouse wheel | scroll the page |
 
@@ -66,8 +113,44 @@ Useful flags:
 -width      maximum frame width in pixels
 -height     maximum frame height in pixels
 -load-timeout page load timeout (default 30s)
--measure-cells query CSI 14t/16t for exact cell pixels (may leave terminal replies)
+-measure-cells asynchronous pixel-size query (default true; use =false to disable)
+-chrome     Chromium executable path (default: KITTY_BROWSE_CHROME, then auto-detect)
+-control-socket optional local Unix socket for screenshots of this live browser
+-screenshot-dir hotkey screenshot directory (default .local/screenshots)
 ```
+
+## Screenshots of the live page
+
+Screenshots come directly from Chromium, not the terminal cell grid. They
+contain page pixels, but not the TUI address/help rows. In browse mode press
+`s` for the current viewport or `S` for the full scrollable page. Files go to
+`.local/screenshots/` with timestamped names; `-screenshot-dir` changes this.
+
+For scripts or another pane, enable a local control socket at startup:
+
+```bash
+# In the browser pane (KITTY_BROWSE_CHROME configured as above):
+./bin/kitty-browse -control-socket "$PWD/.local/live.sock" https://go.dev/
+
+# From another shell, screenshot that SAME live tab:
+./bin/kitty-browse screenshot -socket "$PWD/.local/live.sock" \
+  -out .local/screenshots/viewport.png -json
+./bin/kitty-browse screenshot -socket "$PWD/.local/live.sock" \
+  -out .local/screenshots/full.png -full-page -json
+```
+
+`KITTY_BROWSE_SOCKET` supplies the socket path to either command. Use a separate
+socket per browser instance; no guessing of which pane is active. The screenshot
+command captures the selected tab; it never launches a fresh tab, reloads the URL, or changes viewport/scroll
+position. Login and interactive state remain intact. Full-page capture includes
+the current rendered document, not lazy content the site has not loaded yet.
+Extremely large full-page captures are rejected at 100 million CSS pixels.
+
+PNG files are private (`0600`) and existing files/symlinks are never overwritten.
+The socket is also `0600`, offers only screenshots, never listens on TCP, and
+is removed on a normal exit. If a browser crashes and leaves a stale socket,
+use a new path or remove it only after confirming the old process has stopped.
+On macOS keep the socket path short enough for the Unix socket path limit.
 
 ## Roadmap
 
@@ -81,16 +164,27 @@ Useful flags:
 - [x] Idle PNG still frames, JPEG while the page is moving
 - [x] Text extraction fallback for copy/readability
 - [x] Optional `tuios` pane integration
+- [x] Viewport/full-page screenshots of the live tab, via hotkeys or CLI
+- [x] Clickable tab strip, address/navigation toolbar, and real Chromium tabs
 
 ## Design notes
 
 `termcast` is a display transport, not a browser UI. This project's renderer
-keeps the address bar on row 1 and the help/status line on the last row:
+keeps tabs on row 1, navigation/address on row 2, and status on the last row:
 
-1. it uses the terminal's real pixel size (`CSI 14t`/`16t`) when available;
-2. it switches to a lossless PNG still frame when the page is idle;
-3. it maps terminal mouse coordinates through the measured cell size;
-4. it redraws only the page region, leaving both chrome rows intact.
+1. it uses kernel-reported pixel dimensions or asynchronous `CSI 14t`/`16t`
+   replies, which the normal input parser consumes as geometry, not keystrokes;
+2. it switches to a lossless PNG once after a content change becomes idle;
+3. it maps terminal mouse coordinates proportionally through the rendered
+   viewport, including custom resolutions;
+4. it places Kitty images into an explicit cell rectangle (`c/r`) from row 3
+   to the row above status, so an 8x16 fallback on an 8x18 terminal cannot leave
+   a black gap underneath; no webpage graphics overlap the two chrome rows.
+
+Normal updates keep fixed Kitty image/placement IDs (`i=1,p=1`) and never clear
+the body or delete the visible image before uploading its replacement. Identical
+screencast frames are ACKed but dropped, and an unchanged idle page is not
+periodically captured/redrawn. This avoids black flashes and JPEG/PNG cycling.
 
 ## tuios integration
 
@@ -98,6 +192,25 @@ When `kitty-browse` runs inside a tuios pane (`TUIOS_ENV=1` plus a pane id and
 socket), it renames the pane to the current page title. This is cosmetic and
 best-effort: outside tuios, or when the `tuios` binary is unavailable, it is a
 no-op. Exiting restores the shell-derived pane name.
+
+Kitty frames use a first packet containing both the PNG header and explicit
+pixel dimensions. This avoids a rasterm v0.1.17 / tuios compatibility issue:
+an empty PNG first packet with no dimensions can upload the image but leave
+it with a zero-cell placement, making the page invisible.
+
+For startup, frame and draw diagnostics:
+
+```bash
+KITTY_BROWSE_DEBUG="$PWD/.local/render.log" go run ./cmd/kitty-browse \
+  "file://$PWD/internal/render/testdata/page.html"
+```
+
+Distinguish the layers when debugging: `first screencast frame` means Chromium
+produced pixels; `still frame` means PNG capture succeeded; `drawn frame` means
+the graphics bytes were written, **not** that the host displayed them.
+`tuios capture-pane` and `tuios screenshot` capture character cells, not Kitty
+image pixels; a blank body in those captures is not evidence of missing frames.
+Check the visible pane for the blue test page and orange swatch.
 
 ## References
 

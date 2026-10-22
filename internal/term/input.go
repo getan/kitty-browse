@@ -29,13 +29,15 @@ const (
 	KeyCtrlQ
 	KeyResize
 	KeyMouse
+	KeyCellPixels
 )
 
 // Event is a key or terminal event.
 type Event struct {
-	Kind  EventKind
-	Rune  rune
-	Mouse MouseEvent
+	Kind   EventKind
+	Rune   rune
+	Mouse  MouseEvent
+	Pixels CellPixels
 }
 
 // MouseEvent is one SGR mouse report.
@@ -132,6 +134,17 @@ func readCSI(r *bufio.Reader) (Event, error) {
 			return ev, nil
 		}
 		return Event{}, nil
+	}
+	var kind, height, width int
+	if _, err := fmt.Sscanf(string(seq), "%d;%d;%dt", &kind, &height, &width); err == nil &&
+		(kind == 4 || kind == 6) && height > 0 && width > 0 {
+		p := CellPixels{}
+		if kind == 4 {
+			p.WidthPx, p.HeightPx = width, height
+		} else {
+			p.CellW, p.CellH = width, height
+		}
+		return Event{Kind: KeyCellPixels, Pixels: p}, nil
 	}
 	switch string(seq) {
 	case "A":

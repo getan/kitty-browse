@@ -11,9 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
+
+const syncTimeout = time.Second
 
 // Session is one headless Chromium tab.
 type Session struct {
@@ -25,8 +29,15 @@ type Session struct {
 }
 
 // Open starts Chromium, navigates to target and waits for the document body.
-// target accepts a bare host as https.
+// target accepts a bare host as https, as well as the exact URL about:blank.
 func Open(parent context.Context, target string, timeout time.Duration) (*Session, error) {
+	return open(parent, parent, target, timeout)
+}
+
+// open separates the lifetime context from the context which may cancel the
+// initial navigation. This matters for tabs: canceling a New call must not
+// cancel the shared browser or any previously opened tab.
+func open(parent, operation context.Context, target string, timeout time.Duration) (*Session, error) {
 	target, err := Normalize(target)
 	if err != nil {
 		return nil, err
@@ -43,7 +54,11 @@ func Open(parent context.Context, target string, timeout time.Duration) (*Sessio
 		s.Close()
 		return nil, fmt.Errorf("start browser: %w", err)
 	}
-	if err := s.load(target, timeout); err != nil {
+	if err := s.load(operation, target, timeout); err != nil {
+		s.Close()
+		return nil, err
+	}
+	if _, err := s.Sync(operation); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -68,49 +83,92 @@ func (s *Session) Navigate(ctx context.Context, target string, timeout time.Dura
 	if err != nil {
 		return err
 	}
-	if err := s.load(target, timeout); err != nil {
+	if err := s.load(ctx, target, timeout); err != nil {
 		return err
 	}
-	if s.index < len(s.history)-1 {
-		s.history = s.history[:s.index+1]
-	}
-	s.history = append(s.history, target)
-	s.index = len(s.history) - 1
-	s.url = target
-	return nil
+	_, err = s.Sync(ctx)
+	return err
 }
 
 // Back moves one entry back. It is a no-op at the start of history.
 func (s *Session) Back(ctx context.Context, timeout time.Duration) error {
-	if !s.CanBack() {
-		return ErrNoHistory
-	}
-	target := s.history[s.index-1]
-	if err := s.load(target, timeout); err != nil {
+	history, err := s.navigationHistory(ctx)
+	if err != nil {
 		return err
 	}
-	s.index--
-	s.url = target
+	if history.CurrentIndex <= 0 || history.CurrentIndex >= int64(len(history.Entries)) {
+		return ErrNoHistory
+	}
+	entry := history.Entries[history.CurrentIndex-1]
+	if entry == nil {
+		return fmt.Errorf("back: invalid navigation history entry")
+	}
+	if err := s.goHistory(ctx, timeout, entry.ID); err != nil {
+		return fmt.Errorf("back: %w", err)
+	}
+	if _, err := s.Sync(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
 // Forward moves one entry forward. It is a no-op at the end of history.
 func (s *Session) Forward(ctx context.Context, timeout time.Duration) error {
-	if !s.CanForward() {
-		return ErrNoHistory
-	}
-	target := s.history[s.index+1]
-	if err := s.load(target, timeout); err != nil {
+	history, err := s.navigationHistory(ctx)
+	if err != nil {
 		return err
 	}
-	s.index++
-	s.url = target
+	if history.CurrentIndex < 0 || history.CurrentIndex >= int64(len(history.Entries)-1) {
+		return ErrNoHistory
+	}
+	entry := history.Entries[history.CurrentIndex+1]
+	if entry == nil {
+		return fmt.Errorf("forward: invalid navigation history entry")
+	}
+	if err := s.goHistory(ctx, timeout, entry.ID); err != nil {
+		return fmt.Errorf("forward: %w", err)
+	}
+	if _, err := s.Sync(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+// A BFCache restoration does not necessarily emit a new load event. The
+// chromedp high-level navigation action waits for that event and can time out
+// after a successful Back. Wait for the actual selected history entry instead.
+func (s *Session) goHistory(operation context.Context, timeout time.Duration, id int64) error {
+	return s.run(operation, timeout, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		if _, err := cdp.Call(ctx, target, page.NavigateToHistoryEntry, page.NavigateToHistoryEntryParams{EntryID: id}); err != nil {
+			return err
+		}
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			history, err := cdp.Call(ctx, target, page.GetNavigationHistory, cdp.Empty{})
+			if err != nil {
+				return err
+			}
+			i := history.CurrentIndex
+			if i >= 0 && i < int64(len(history.Entries)) && history.Entries[i] != nil && history.Entries[i].ID == id {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-tick.C:
+			}
+		}
+	}))
 }
 
 // Reload reloads the current URL without adding a history entry.
 func (s *Session) Reload(ctx context.Context, timeout time.Duration) error {
-	return s.load(s.url, timeout)
+	if err := s.run(ctx, timeout, chromedp.Reload()); err != nil {
+		return fmt.Errorf("reload %s: %w", s.url, err)
+	}
+	_, err := s.Sync(ctx)
+	return err
 }
 
 // SetViewport matches the Chromium viewport to the page area's pixels, so
@@ -131,12 +189,26 @@ func (s *Session) Click(x, y float64) error {
 // scrolls down.
 func (s *Session) Scroll(x, y, deltaY float64) error {
 	return chromedp.Do(s.ctx, chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
-		_, err := chromedp.Call(ctx, input.DispatchMouseEvent, input.DispatchMouseEventParams{
+		// DeltaX and DeltaY are required for a wheel event, but the generated
+		// protocol struct tags omit numeric zero values. Use a command with
+		// required JSON fields and the action's explicit target so a vertical
+		// wheel event really includes deltaX: 0.
+		_, err := cdp.Call(ctx, t, dispatchWheelEvent, wheelEventParams{
 			Type: input.DispatchMouseEventTypeMouseWheel, X: x, Y: y, DeltaX: 0, DeltaY: deltaY,
 		})
 		return err
 	}))
 }
+
+type wheelEventParams struct {
+	Type   input.DispatchMouseEventType `json:"type"`
+	X      float64                      `json:"x"`
+	Y      float64                      `json:"y"`
+	DeltaX float64                      `json:"deltaX"`
+	DeltaY float64                      `json:"deltaY"`
+}
+
+var dispatchWheelEvent = cdp.Command[wheelEventParams, cdp.Empty]{Method: input.CommandDispatchMouseEvent}
 
 // Text returns the rendered page's innerText. It is the readable fallback when
 // a page is unreadable as pixels or the user needs selectable text.
@@ -162,17 +234,28 @@ func (s *Session) History() ([]string, int) {
 	return append([]string(nil), s.history...), s.index
 }
 
-// Close stops Chromium and its child processes.
+// Sync refreshes the session URL and history from Chromium and returns the
+// current history entry's title. It uses the session's lifetime context while
+// respecting ctx cancellation, and is bounded to one second for UI polling.
+func (s *Session) Sync(ctx context.Context) (title string, err error) {
+	history, err := s.navigationHistory(ctx)
+	if err != nil {
+		return "", err
+	}
+	entry := history.Entries[history.CurrentIndex]
+	return entry.Title, nil
+}
+
+// Close closes this tab. If the Session is the root session which started
+// Chromium, it also stops Chromium and its child processes.
 func (s *Session) Close() {
 	if s != nil && s.cancel != nil {
 		s.cancel()
 	}
 }
 
-func (s *Session) load(target string, timeout time.Duration) error {
-	loadCtx, cancel := context.WithTimeout(s.ctx, timeout)
-	defer cancel()
-	if err := chromedp.Do(loadCtx,
+func (s *Session) load(operation context.Context, target string, timeout time.Duration) error {
+	if err := s.run(operation, timeout,
 		chromedp.Navigate(target),
 		chromedp.WaitReady("body"),
 	); err != nil {
@@ -181,14 +264,59 @@ func (s *Session) load(target string, timeout time.Duration) error {
 	return nil
 }
 
+func (s *Session) navigationHistory(operation context.Context) (page.GetNavigationHistoryResult, error) {
+	var history page.GetNavigationHistoryResult
+	err := s.run(operation, syncTimeout, chromedp.Func(func(ctx context.Context, target *chromedp.Target) error {
+		var err error
+		history, err = cdp.Call(ctx, target, page.GetNavigationHistory, cdp.Empty{})
+		return err
+	}))
+	if err != nil {
+		return history, fmt.Errorf("sync navigation history: %w", err)
+	}
+	if history.CurrentIndex < 0 || history.CurrentIndex >= int64(len(history.Entries)) || history.Entries[history.CurrentIndex] == nil {
+		return history, fmt.Errorf("sync navigation history: invalid current entry")
+	}
+
+	s.history = make([]string, len(history.Entries))
+	for i, entry := range history.Entries {
+		if entry != nil {
+			s.history[i] = entry.URL
+		}
+	}
+	s.index = int(history.CurrentIndex)
+	s.url = history.Entries[history.CurrentIndex].URL
+	return history, nil
+}
+
+// run bridges a caller's operation context to a timeout derived from the
+// persistent tab context, so finishing or canceling an operation never tears
+// down Chromium itself.
+func (s *Session) run(operation context.Context, timeout time.Duration, actions ...chromedp.Action[chromedp.Void]) error {
+	if err := operation.Err(); err != nil {
+		return err
+	}
+	opCtx, cancel := context.WithTimeout(s.ctx, timeout)
+	stop := context.AfterFunc(operation, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+	return chromedp.Do(opCtx, actions...)
+}
+
 // ErrNoHistory means Back/Forward had nowhere to go.
 var ErrNoHistory = errors.New("no history entry")
 
-// Normalize adds https:// to a bare host and accepts http, https and file.
+// Normalize adds https:// to a bare host and accepts http, https, file, and
+// exactly about:blank. Other about URLs remain unsupported.
 func Normalize(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("empty URL")
+	}
+	if raw == "about:blank" {
+		return raw, nil
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw

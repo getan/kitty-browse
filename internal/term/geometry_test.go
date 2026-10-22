@@ -14,21 +14,41 @@ func TestParseCellPixels(t *testing.T) {
 
 func TestCellToPixel(t *testing.T) {
 	g := GeometryFor(41, 100, CellPixels{WidthPx: 1200, HeightPx: 800, CellW: 8, CellH: 16})
-	x, y, ok := g.CellToPixel(1, 2)
+	// The custom 1200x800 raster is stretched over 100x38 cells. Mapping must
+	// follow that ratio rather than the reported 8x16 physical cell estimate.
+	g.ContentHeightPx = 800
+	x, y, ok := g.CellToPixel(1, 3)
 	if !ok || x != 0 || y != 0 {
 		t.Fatalf("top-left = %v,%v,%v", x, y, ok)
 	}
 	x, y, ok = g.CellToPixel(10, 5)
-	if !ok || x != 72 || y != 48 {
+	if !ok || x != 108 || y != 1600.0/38 {
 		t.Fatalf("10,5 = %v,%v,%v", x, y, ok)
 	}
-	if _, _, ok := g.CellToPixel(1, 1); ok {
-		t.Fatal("header row must not map into the page")
+	if _, _, ok := g.CellToPixel(1, 2); ok {
+		t.Fatal("chrome rows must not map into the page")
 	}
-	if _, _, ok := g.CellToPixel(999, 2); ok {
+	if _, _, ok := g.CellToPixel(999, 3); ok {
 		t.Fatal("outside content must not map")
 	}
-	if g.ContentHeightPx != (41-2)*16 {
-		t.Fatalf("content height = %d, want %d", g.ContentHeightPx, (41-2)*16)
+	if _, _, ok := g.CellToPixel(1, 41); ok {
+		t.Fatal("footer row must not map into the page")
+	}
+	if g.ContentRows != 38 || g.ContentTopRow != 3 {
+		t.Fatalf("content cells = row %d + %d", g.ContentTopRow, g.ContentRows)
+	}
+}
+
+func TestGeometryUsesMeasuredEightByEighteenCells(t *testing.T) {
+	g := GeometryFor(50, 100, CellPixels{WidthPx: 800, HeightPx: 900, CellW: 8, CellH: 18})
+	if g.ContentRows != 47 || g.ContentWidthPx != 800 || g.ContentHeightPx != 846 {
+		t.Fatalf("geometry = %+v", g)
+	}
+}
+
+func TestTerminalCellPixelsFallsBackWithoutTerminal(t *testing.T) {
+	p := TerminalCellPixels(nil, 50, 100)
+	if p != (CellPixels{WidthPx: 800, HeightPx: 800, CellW: 8, CellH: 16}) {
+		t.Fatalf("fallback = %+v", p)
 	}
 }

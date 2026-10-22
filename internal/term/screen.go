@@ -1,5 +1,5 @@
 // Package term owns the terminal mode and the cell grid around the browser
-// image. The image occupies rows 2..N; row 1 is reserved for the address bar.
+// image. The image starts after two chrome rows and ends before the footer.
 package term
 
 import (
@@ -11,6 +11,9 @@ import (
 
 	xterm "golang.org/x/term"
 )
+
+// ChromeRows is the fixed tab/navigation chrome above the page image.
+const ChromeRows = 2
 
 // Screen switches the terminal into raw mode and an alternate screen.
 type Screen struct {
@@ -32,7 +35,7 @@ func Open(in *os.File, out io.Writer) (*Screen, error) {
 	if err != nil {
 		return nil, fmt.Errorf("raw mode: %w", err)
 	}
-	rows, cols, err := xterm.GetSize(int(in.Fd()))
+	rows, cols, err := terminalSize(int(in.Fd()), xterm.GetSize)
 	if err != nil {
 		_ = xterm.Restore(int(in.Fd()), state)
 		return nil, fmt.Errorf("terminal size: %w", err)
@@ -63,10 +66,16 @@ func (s *Screen) Close() {
 func (s *Screen) Refresh() (rows, cols int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r, c, err := xterm.GetSize(int(s.in.Fd())); err == nil {
+	if r, c, err := terminalSize(int(s.in.Fd()), xterm.GetSize); err == nil {
 		s.rows, s.cols = r, c
 	}
 	return s.rows, s.cols
+}
+
+// x/term returns width, height (columns, rows), unlike Screen's row-first API.
+func terminalSize(fd int, getSize func(int) (int, int, error)) (rows, cols int, err error) {
+	cols, rows, err = getSize(fd)
+	return
 }
 
 // Size returns the last known terminal grid.
@@ -79,10 +88,33 @@ func (s *Screen) Size() (rows, cols int) {
 // BodyRows is the number of rows available to the page image.
 func (s *Screen) BodyRows() int {
 	rows, _ := s.Size()
-	if rows <= 2 {
-		return 1
+	body := rows - ChromeRows - 1
+	if body < 0 {
+		return 0
 	}
-	return rows - 2
+	return body
+}
+
+// QueryPixels asynchronously requests pane and cell pixel dimensions. Replies
+// are consumed by ReadEvent, so this method never competes for stdin.
+func (s *Screen) QueryPixels() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = io.WriteString(s.out, "\x1b[14t\x1b[16t")
+}
+
+// Chrome draws exactly the two styled chrome lines. ANSI escapes are preserved
+// verbatim; callers are responsible for keeping their visible width in bounds.
+func (s *Screen) Chrome(lines []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := 0; i < ChromeRows; i++ {
+		line := ""
+		if i < len(lines) {
+			line = lines[i]
+		}
+		_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", i+1, line)
+	}
 }
 
 // Header draws the one-line address/status bar.
@@ -110,13 +142,12 @@ func (s *Screen) Footer(text string) {
 	_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", s.rows, truncate(text, cols))
 }
 
-// WriteBody clears only the browser area and lets draw write an image there.
-// Clearing from row 2 leaves the address bar intact; the footer is redrawn by
-// the caller after the image.
+// WriteBody positions the image without clearing the previous frame. Erasing
+// here makes tuios remove the visible placement before the replacement arrives.
 func (s *Screen) WriteBody(draw func(io.Writer) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := io.WriteString(s.out, "\x1b[2;1H\x1b[J"); err != nil {
+	if _, err := fmt.Fprintf(s.out, "\x1b[%d;1H", ChromeRows+1); err != nil {
 		return err
 	}
 	return draw(s.out)
@@ -126,7 +157,7 @@ func (s *Screen) WriteBody(draw func(io.Writer) error) error {
 func (s *Screen) ClearBody() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, _ = io.WriteString(s.out, "\x1b[2;1H\x1b[J")
+	s.clearBodyLocked()
 }
 
 // Text clears the page area and writes plain text lines. The caller keeps the
@@ -134,15 +165,19 @@ func (s *Screen) ClearBody() {
 func (s *Screen) Text(lines []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := io.WriteString(s.out, "\x1b[2;1H\x1b[J"); err != nil {
-		return
-	}
+	s.clearBodyLocked()
 	cols := s.cols
 	if cols < 1 {
 		cols = 1
 	}
-	for i := 0; i < s.rows-2 && i < len(lines); i++ {
-		_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", i+2, truncate(lines[i], cols))
+	for i := 0; i < s.rows-ChromeRows-1 && i < len(lines); i++ {
+		_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K%s", i+ChromeRows+1, truncate(lines[i], cols))
+	}
+}
+
+func (s *Screen) clearBodyLocked() {
+	for row := ChromeRows + 1; row < s.rows; row++ {
+		_, _ = fmt.Fprintf(s.out, "\x1b[%d;1H\x1b[2K", row)
 	}
 }
 

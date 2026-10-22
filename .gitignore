@@ -1,5 +1,6 @@
 /bin/
 /kitty-browse
 /.cache/
+/.local/
 *.test
 .DS_Store

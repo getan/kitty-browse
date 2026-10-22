@@ -14,6 +14,7 @@ type Geometry struct {
 	CellWidth       int
 	CellHeight      int
 	ContentTopRow   int // 1-based terminal row where the page starts
+	ContentRows     int // number of terminal rows occupied by the page image
 	ContentWidthPx  int
 	ContentHeightPx int
 }
@@ -21,14 +22,15 @@ type Geometry struct {
 // CellToPixel maps a 1-based terminal cell to the page viewport. Returns false
 // when the point is outside the content area.
 func (g Geometry) CellToPixel(col, row int) (x, y float64, ok bool) {
-	if col < 1 || row < g.ContentTopRow || g.CellWidth <= 0 || g.CellHeight <= 0 {
+	if col < 1 || col > g.Cols || row < g.ContentTopRow ||
+		row >= g.ContentTopRow+g.ContentRows || g.Cols <= 0 || g.ContentRows <= 0 ||
+		g.ContentWidthPx <= 0 || g.ContentHeightPx <= 0 {
 		return 0, 0, false
 	}
-	x = float64(col-1) * float64(g.CellWidth)
-	y = float64(row-g.ContentTopRow) * float64(g.CellHeight)
-	if x < 0 || y < 0 || x >= float64(g.ContentWidthPx) || y >= float64(g.ContentHeightPx) {
-		return 0, 0, false
-	}
+	// The image may have been rendered at a custom size and stretched into its
+	// cell placement. Map against the actual image extent, not an estimated cell.
+	x = float64(col-1) * float64(g.ContentWidthPx) / float64(g.Cols)
+	y = float64(row-g.ContentTopRow) * float64(g.ContentHeightPx) / float64(g.ContentRows)
 	return x, y, true
 }
 
@@ -86,6 +88,18 @@ func FallbackCellPixels(rows, cols int) CellPixels {
 	return CellPixels{WidthPx: cols * 8, HeightPx: rows * 16, CellW: 8, CellH: 16}
 }
 
+// TerminalCellPixels obtains the kernel-reported terminal pixel extent when it
+// is available. Pseudo terminals commonly leave it zero, in which case the
+// conservative fallback is returned without reading stdin.
+func TerminalCellPixels(in *os.File, rows, cols int) CellPixels {
+	if in != nil {
+		if p, ok := ioctlCellPixels(in, rows, cols); ok {
+			return p
+		}
+	}
+	return FallbackCellPixels(rows, cols)
+}
+
 var csiPixelRE = regexp.MustCompile(`\x1b\[(?:4|6);(\d+);(\d+)t`)
 
 // ParseCellPixels parses one or both of CSI 4;height;width t (text area) and
@@ -126,14 +140,18 @@ func GeometryFor(rows, cols int, p CellPixels) Geometry {
 	if p.HeightPx <= 0 {
 		p.HeightPx = rows * p.CellH
 	}
-	contentRows := rows - 2
-	if contentRows < 1 {
-		contentRows = 1
+	contentRows := rows - ChromeRows - 1
+	if contentRows < 0 {
+		contentRows = 0
+	}
+	contentHeight := 0
+	if rows > 0 {
+		contentHeight = p.HeightPx * contentRows / rows
 	}
 	return Geometry{
 		Cols: cols, Rows: rows, CellWidth: p.CellW, CellHeight: p.CellH,
-		ContentTopRow: 2, ContentWidthPx: p.WidthPx,
-		ContentHeightPx: contentRows * p.CellH,
+		ContentTopRow: ChromeRows + 1, ContentRows: contentRows,
+		ContentWidthPx: p.WidthPx, ContentHeightPx: contentHeight,
 	}
 }
 

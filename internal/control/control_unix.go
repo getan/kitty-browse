@@ -1,0 +1,126 @@
+//go:build unix
+
+package control
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// Start creates a Unix-domain socket screenshot server. Existing filesystem
+// entries are never removed or replaced.
+func Start(socketPath string, capture CaptureFunc) (*Server, error) {
+	if socketPath == "" {
+		return nil, errors.New("control socket path is empty")
+	}
+	if capture == nil {
+		return nil, errors.New("capture function is nil")
+	}
+	if err := ensureParent(socketPath); err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(socketPath); err == nil {
+		return nil, fmt.Errorf("control socket path already exists: %s", socketPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect control socket path: %w", err)
+	}
+
+	addr := &net.UnixAddr{Name: socketPath, Net: "unix"}
+	listener, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen on control socket: %w", err)
+	}
+	// Manage unlinking ourselves so Close cannot remove a replacement entry.
+	listener.SetUnlinkOnClose(false)
+	info, err := os.Lstat(socketPath)
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("inspect new control socket: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = listener.Close()
+			current, statErr := os.Lstat(socketPath)
+			if statErr == nil && os.SameFile(info, current) {
+				_ = os.Remove(socketPath)
+			}
+		}
+	}()
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		return nil, fmt.Errorf("secure control socket: %w", err)
+	}
+	current, err := os.Lstat(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("verify new control socket: %w", err)
+	}
+	if !os.SameFile(info, current) {
+		return nil, errors.New("control socket path changed during startup")
+	}
+
+	s := newServer(socketPath, listener, info, capture)
+	ok = true
+	return s, nil
+}
+
+func ensureParent(socketPath string) error {
+	parent := filepath.Dir(socketPath)
+	if info, err := os.Stat(parent); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("control socket parent is not a directory: %s", parent)
+		}
+		return nil // Preserve permissions on an existing directory.
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect control socket parent: %w", err)
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return fmt.Errorf("create control socket parent: %w", err)
+	}
+	// MkdirAll is affected by umask. The newly requested parent itself is
+	// private by contract; existing ancestors are deliberately left alone.
+	if err := os.Chmod(parent, 0o700); err != nil {
+		return fmt.Errorf("secure control socket parent: %w", err)
+	}
+	return nil
+}
+
+// Capture requests a screenshot through socketPath.
+func Capture(ctx context.Context, socketPath string, fullPage bool) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("capture context is nil")
+	}
+	if socketPath == "" {
+		return nil, errors.New("control socket path is empty")
+	}
+	dialer := &net.Dialer{Timeout: 3 * time.Second}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 17 * time.Second,
+		DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(dialCtx, "unix", socketPath)
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: clientTimeout}
+	endpoint := "http://unix/screenshot"
+	if fullPage {
+		endpoint += "?fullPage=true"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create screenshot request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request screenshot: %w", err)
+	}
+	defer resp.Body.Close()
+	return readCaptureResponse(resp)
+}

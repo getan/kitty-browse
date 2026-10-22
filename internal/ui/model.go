@@ -28,6 +28,12 @@ const (
 	ActionOverlayClose
 	ActionToggleText
 	ActionTextScroll
+	ActionScreenshot
+	ActionScreenshotFull
+	ActionNewTab
+	ActionSelectTab
+	ActionCloseTab
+	ActionEditAddress
 	ActionQuit
 )
 
@@ -36,14 +42,29 @@ type Action struct {
 	Kind  ActionKind
 	URL   string
 	Label string
+	Index int
+}
+
+// TabInfo is the display information for one browser tab.
+type TabInfo struct {
+	Title string
+	URL   string
 }
 
 // Model is the address bar and status state.
 type Model struct {
-	URL     string
-	Address string
-	Editing bool
-	Status  string
+	URL          string
+	Address      string
+	Editing      bool
+	Status       string
+	Tabs         []TabInfo
+	ActiveTab    int
+	CanGoBack    bool
+	CanGoForward bool
+
+	// replaceAddress records the selection made by clicking the address field.
+	// The next typed character replaces the selection rather than appending.
+	replaceAddress bool
 
 	HintMode   bool
 	HintBuffer string
@@ -71,7 +92,7 @@ const (
 
 // New returns a browse-mode model for url.
 func New(url string) *Model {
-	return &Model{URL: url, Address: url}
+	return &Model{URL: url, Address: url, Tabs: []TabInfo{{URL: url}}}
 }
 
 // Header renders the one-line chrome.
@@ -111,6 +132,8 @@ func (m *Model) Footer(bookmarked bool) string {
 		return ""
 	}
 	switch {
+	case m.Status != "":
+		return m.Status
 	case m.Editing:
 		return "Enter navigate · Esc cancel · Backspace edit"
 	case m.HintMode:
@@ -118,7 +141,7 @@ func (m *Model) Footer(bookmarked bool) string {
 	case m.Overlay != OverlayNone:
 		return "j/k select · Enter open · Esc close"
 	}
-	line := "Ctrl+L address · Alt+F hints · H history · B bookmarks · q quit"
+	line := "mouse: tabs, navigation, address, Go, Shot · Ctrl+L address · q quit"
 	if bookmarked {
 		line = "★ " + line
 	}
@@ -128,6 +151,9 @@ func (m *Model) Footer(bookmarked bool) string {
 // SetURL updates the displayed URL after navigation.
 func (m *Model) SetURL(url string) {
 	m.URL = url
+	if m.ActiveTab >= 0 && m.ActiveTab < len(m.Tabs) {
+		m.Tabs[m.ActiveTab].URL = url
+	}
 	if !m.Editing {
 		m.Address = url
 	}
@@ -142,25 +168,29 @@ func (m *Model) Handle(ev term.Event) Action {
 	if m.Editing {
 		switch ev.Kind {
 		case term.KeyEnter:
-			u, err := browser.Normalize(m.Address)
-			if err != nil {
-				m.Status = "invalid URL"
-				return Action{}
-			}
-			m.Editing = false
-			m.Status = ""
-			return Action{Kind: ActionNavigate, URL: u}
+			return m.submitAddress()
 		case term.KeyEscape:
 			m.Editing = false
+			m.replaceAddress = false
 			m.Address = m.URL
 			m.Status = ""
 		case term.KeyBackspace:
+			if m.replaceAddress {
+				m.Address = ""
+				m.replaceAddress = false
+				break
+			}
 			r := []rune(m.Address)
 			if len(r) > 0 {
 				m.Address = string(r[:len(r)-1])
 			}
 		case term.KeyText:
-			m.Address += string(ev.Rune)
+			if m.replaceAddress {
+				m.Address = string(ev.Rune)
+				m.replaceAddress = false
+			} else {
+				m.Address += string(ev.Rune)
+			}
 		}
 		return Action{}
 	}
@@ -272,6 +302,7 @@ func (m *Model) Handle(ev term.Event) Action {
 	switch ev.Kind {
 	case term.KeyCtrlL:
 		m.Editing = true
+		m.replaceAddress = false
 		m.Address = m.URL
 		m.Status = ""
 	case term.KeyCtrlR:
@@ -290,7 +321,12 @@ func (m *Model) Handle(ev term.Event) Action {
 			return Action{Kind: ActionReload}
 		case 'l':
 			m.Editing = true
+			m.replaceAddress = false
 			m.Address = m.URL
+		case 'T':
+			return Action{Kind: ActionNewTab}
+		case 'W':
+			return Action{Kind: ActionCloseTab, Index: m.ActiveTab}
 		case 'H':
 			if len(m.HistoryURLs) == 0 {
 				m.Status = "history empty"
@@ -307,9 +343,25 @@ func (m *Model) Handle(ev term.Event) Action {
 			return Action{Kind: ActionToggleBookmark, URL: m.URL}
 		case 't':
 			return Action{Kind: ActionToggleText}
+		case 's':
+			return Action{Kind: ActionScreenshot}
+		case 'S':
+			return Action{Kind: ActionScreenshotFull}
 		}
 	}
 	return Action{}
+}
+
+func (m *Model) submitAddress() Action {
+	u, err := browser.Normalize(m.Address)
+	if err != nil {
+		m.Status = "invalid URL"
+		return Action{}
+	}
+	m.Editing = false
+	m.replaceAddress = false
+	m.Status = ""
+	return Action{Kind: ActionNavigate, URL: u}
 }
 
 // SetHints installs a fresh page overlay and enters hint mode.

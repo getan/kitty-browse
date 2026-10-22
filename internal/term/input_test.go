@@ -49,3 +49,18 @@ func TestParseMouse(t *testing.T) {
 		t.Fatalf("events = %#v, want %#v", got, want)
 	}
 }
+
+func TestParsePixelResponsesAsCompleteEvents(t *testing.T) {
+	got, err := Parse([]byte("\x1b[6;18;8t\x1b[4;900;800tX"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Event{
+		{Kind: KeyCellPixels, Pixels: CellPixels{CellW: 8, CellH: 18}},
+		{Kind: KeyCellPixels, Pixels: CellPixels{WidthPx: 800, HeightPx: 900}},
+		{Kind: KeyText, Rune: 'X'},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+}

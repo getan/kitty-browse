@@ -138,3 +138,21 @@ func TestTextMode(t *testing.T) {
 		t.Fatalf("scroll = %v", got)
 	}
 }
+
+func TestScreenshotHotkeys(t *testing.T) {
+	m := New("https://go.dev")
+	for key, want := range map[rune]ActionKind{'s': ActionScreenshot, 'S': ActionScreenshotFull} {
+		if got := m.Handle(term.Event{Kind: term.KeyText, Rune: key}); got.Kind != want {
+			t.Fatalf("%q = %v, want %v", key, got.Kind, want)
+		}
+	}
+	m.Editing = true
+	if got := m.Handle(term.Event{Kind: term.KeyText, Rune: 's'}); got.Kind != ActionNone || !strings.HasSuffix(m.Address, "s") {
+		t.Fatalf("address typing intercepted as screenshot: %+v", got)
+	}
+	m.Editing = false
+	m.SetHints([]browser.Hint{{Label: "s"}})
+	if got := m.Handle(term.Event{Kind: term.KeyText, Rune: 's'}); got.Kind != ActionHint {
+		t.Fatalf("hint selection intercepted as screenshot: %+v", got)
+	}
+}
