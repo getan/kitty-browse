@@ -24,6 +24,33 @@ chromedp ──CDP screencast──> internal/render ──rasterm/Kitty──> 
 - The browser lifecycle stays separate so a future `tuios` pane or automation
   tool can reuse the same session.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/getan/kitty-browse/master/install.sh | sh
+```
+
+The script downloads the archive for this platform, verifies it against the
+release's `checksums.txt`, and installs to `/usr/local/bin` (or `~/.local/bin`
+when that is not writable).
+
+When GitHub is unreachable it retries through the same mirror list golder uses,
+for the version query as well as the download — on mainland networks
+`api.github.com` usually fails before `github.com` does. A mirror's copy of
+`checksums.txt` is only accepted when every responding mirror agrees on the
+archive's hash, so one poisoned mirror cannot pass both the archive and its
+digest.
+
+| variable | meaning |
+|---|---|
+| `KITTY_BROWSE_VERSION` | install a specific tag instead of the latest |
+| `KITTY_BROWSE_INSTALL_DIR` | install somewhere else |
+| `KITTY_BROWSE_MIRROR` | replace the mirror list; `off` uses GitHub only |
+| `KITTY_BROWSE_API` | use a different "latest release" endpoint |
+| `GITHUB_TOKEN` | raise the API rate limit (sent to GitHub only, never a mirror) |
+
+Chromium is not installed by the script; see Requirements.
+
 ## Requirements
 
 - Go 1.25+

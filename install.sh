@@ -168,15 +168,49 @@ case "$arch_raw" in
 	*) err "不支持的架构: ${arch_raw}（目前发布 linux/darwin 的 amd64 与 arm64）" ;;
 esac
 
-# 4. 解析版本。
+# 4. 解析版本。版本查询和归档下载走同一份镜像列表：大陆直连 api.github.com
+#    往往比 github.com 更先失败，只给下载配镜像等于没配。
+API_URL="${KITTY_BROWSE_API:-https://api.github.com/repos/$REPO/releases/latest}"
+
+tag_of() {
+	printf '%s' "$1" | tr -d ' \n' | grep -oE '"tag_name":"[^"]*"' | head -n1 | cut -d'"' -f4
+}
+
+# resolve_version 依次尝试直连与镜像，返回第一个能解析出的 tag。
+# GitHub token 只发给 api.github.com：镜像会看到请求头，不能让它拿到凭据。
+resolve_version() {
+	if json=$($DL "$API_URL" $api_auth 2>/dev/null); then
+		if tag=$(tag_of "$json") && [ -n "$tag" ]; then
+			printf '%s' "$tag"
+			return 0
+		fi
+	fi
+	# 显式指定了 API 地址（例如自建站点接口）就不再套镜像前缀。
+	[ -n "${KITTY_BROWSE_API:-}" ] && return 1
+	if [ -n "$(mirrors)" ]; then
+		info "版本查询: GitHub 直连失败，改试镜像 ..."
+	fi
+	for m in $(mirrors); do
+		if json=$($DL "$m$API_URL" 2>/dev/null); then
+			if tag=$(tag_of "$json") && [ -n "$tag" ]; then
+				# 版本号经镜像取得，但归档仍要靠交叉校验过的 checksums.txt
+				# 才能安装，所以镜像最多能让版本变旧，不能让内容被替换。
+				info "版本查询: 使用镜像 $m（归档仍会做 sha256 校验）"
+				printf '%s' "$tag"
+				return 0
+			fi
+		fi
+	done
+	return 1
+}
+
 VERSION="${KITTY_BROWSE_VERSION:-}"
 api_auth=""
 [ -n "${GITHUB_TOKEN:-}" ] && api_auth="-H Authorization:\ Bearer\ $GITHUB_TOKEN"
 if [ -z "$VERSION" ]; then
 	info "查询最新 release ..."
-	latest_json=$($DL "https://api.github.com/repos/$REPO/releases/latest" $api_auth 2>/dev/null) || \
-		err "无法查询最新版本，请检查网络或用 KITTY_BROWSE_VERSION 指定版本"
-	VERSION=$(printf '%s' "$latest_json" | tr -d ' \n' | grep -oE '"tag_name":"[^"]*"' | head -n1 | cut -d'"' -f4)
+	VERSION=$(resolve_version) || \
+		err "无法查询最新版本（直连与镜像均失败），请用 KITTY_BROWSE_VERSION 指定版本"
 	[ -n "$VERSION" ] || err "无法解析最新版本号，请用 KITTY_BROWSE_VERSION 指定"
 fi
 
