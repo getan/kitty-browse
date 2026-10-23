@@ -39,7 +39,10 @@ func OpenTabs(parent context.Context, target string, timeout time.Duration) (*Ta
 	}
 
 	tabs := &Tabs{anchor: anchor, index: -1}
-	if err := tabs.New(parent, target, timeout); err != nil {
+	// The first page is opened best-effort: a server that is not up yet leaves
+	// Chromium's error page on screen and the control socket alive, which is
+	// exactly what the caller needs to see.
+	if err := tabs.newTab(parent, target, timeout, true); err != nil {
 		tabs.Close()
 		return nil, err
 	}
@@ -81,6 +84,12 @@ func (t *Tabs) Index() int {
 
 // New creates, loads, and selects a user tab without replacing the browser.
 func (t *Tabs) New(ctx context.Context, target string, timeout time.Duration) error {
+	return t.newTab(ctx, target, timeout, false)
+}
+
+// newTab is New with the failure policy chosen by the caller: a tab the person
+// asked for keeps the strict contract, the browser's first page does not.
+func (t *Tabs) newTab(ctx context.Context, target string, timeout time.Duration, bestEffort bool) error {
 	if t == nil {
 		return ErrTabsClosed
 	}
@@ -90,7 +99,11 @@ func (t *Tabs) New(ctx context.Context, target string, timeout time.Duration) er
 		return ErrTabsClosed
 	}
 
-	session, err := open(t.anchor.Context(), ctx, target, timeout)
+	openTab := open
+	if bestEffort {
+		openTab = openBestEffort
+	}
+	session, err := openTab(t.anchor.Context(), ctx, target, timeout)
 	if err != nil {
 		return fmt.Errorf("open new tab: %w", err)
 	}

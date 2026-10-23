@@ -25,6 +25,7 @@ type Session struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	url          string
+	loadErr      error
 	history      []string
 	index        int
 	closeOnce    sync.Once
@@ -42,6 +43,18 @@ func Open(parent context.Context, target string, timeout time.Duration) (*Sessio
 // initial navigation. This matters for tabs: canceling a New call must not
 // cancel the shared browser or any previously opened tab.
 func open(parent, operation context.Context, target string, timeout time.Duration) (*Session, error) {
+	return openWith(parent, operation, target, timeout, false)
+}
+
+// openBestEffort keeps the tab when only the navigation failed. Chromium has
+// already drawn its own error page, and during development the server usually
+// starts after the browser: exiting here would take the control socket down
+// exactly when the failure is the thing worth looking at.
+func openBestEffort(parent, operation context.Context, target string, timeout time.Duration) (*Session, error) {
+	return openWith(parent, operation, target, timeout, true)
+}
+
+func openWith(parent, operation context.Context, target string, timeout time.Duration, bestEffort bool) (*Session, error) {
 	target, err := Normalize(target)
 	if err != nil {
 		return nil, err
@@ -66,13 +79,25 @@ func open(parent, operation context.Context, target string, timeout time.Duratio
 		s.Close()
 		return nil, err
 	}
-	if err := s.load(operation, target, timeout); err != nil {
+	loadErr := s.load(operation, target, timeout)
+	// A failed load is only fatal when the tab did not survive it. Chromium
+	// answers net::ERR_* with its own error page, whose document has no body:
+	// Sync can fail there even though the tab, the browser and the target are
+	// alive. Best effort keeps the tab anyway, because the alternative is a
+	// browser that exits whenever the server it points at is not up yet.
+	if _, err := s.Sync(operation); err != nil && (loadErr == nil || !bestEffort) {
 		s.Close()
+		if loadErr != nil {
+			return nil, loadErr
+		}
 		return nil, err
 	}
-	if _, err := s.Sync(operation); err != nil {
-		s.Close()
-		return nil, err
+	if loadErr != nil {
+		if !bestEffort {
+			s.Close()
+			return nil, loadErr
+		}
+		s.loadErr = loadErr
 	}
 	return s, nil
 }
@@ -82,6 +107,10 @@ func (s *Session) Context() context.Context { return s.ctx }
 
 // URL is the normalized URL the session opened.
 func (s *Session) URL() string { return s.url }
+
+// LoadError is the navigation failure the session survived, or nil. The page on
+// screen is Chromium's error page for that failure.
+func (s *Session) LoadError() error { return s.loadErr }
 
 // CanBack reports whether history has an earlier entry.
 func (s *Session) CanBack() bool { return s.index > 0 }

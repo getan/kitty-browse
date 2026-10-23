@@ -125,6 +125,11 @@ func main() {
 	}
 	defer tabs.Close()
 	sess := tabs.Active()
+	if err := sess.LoadError(); err != nil {
+		// The browser stays on Chromium's error page; say why once, since the
+		// page itself is all the person sees.
+		debugf("initial page: %v", err)
+	}
 	debugf("browser open url=%s", debugURL(sess.URL()))
 
 	pane := tuios.FromEnv(nil)
