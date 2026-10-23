@@ -232,7 +232,16 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 			continue
 		}
 		id := string(info.TargetID)
+		// Every page target stays live, so a tab the person opened as a blank
+		// scratch page is not closed underneath them. It is not attached if it
+		// is new, though: Chromium's own initial target and the blank pages
+		// other tooling opens would otherwise appear in the tab strip and,
+		// because discovered pages are selected, leave the pane on a page that
+		// never paints.
 		live[id] = true
+		if info.URL == "about:blank" {
+			continue
+		}
 		pages = append(pages, info)
 	}
 
@@ -312,7 +321,11 @@ func (t *Tabs) activeLocked() *Session {
 	if t.index < 0 || t.index >= len(t.sessions) {
 		return nil
 	}
-	return t.sessions[t.index]
+	session := t.sessions[t.index]
+	if session == nil {
+		return nil
+	}
+	return session
 }
 
 func userPageTarget(info *cdptarget.Info, anchorID string) bool {
