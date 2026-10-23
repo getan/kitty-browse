@@ -105,8 +105,9 @@ func main() {
 	if target == "" {
 		target = "https://example.com"
 	}
+	browser.PruneStalePrivateProfiles(time.Now())
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stop()
 
 	var browserOutput io.Writer

@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultProfileDirUsesXDGConfigHome(t *testing.T) {
@@ -247,5 +249,56 @@ func TestDiscardRestoredSessionKeepsTheRestOfTheProfile(t *testing.T) {
 	}
 	if data, err := os.ReadFile(keep); err != nil || string(data) != "login" {
 		t.Errorf("Cookies changed: %q %v", data, err)
+	}
+}
+
+func TestPreparePrivateProfileWritesOwner(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+
+	dir, err := preparePrivateProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if filepath.Dir(dir) != root {
+		t.Fatalf("private profile dir = %q, want under %q", dir, root)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, privateOwnerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != strconv.Itoa(os.Getpid()) {
+		t.Fatalf("owner = %q", raw)
+	}
+}
+
+func TestPruneStalePrivateProfilesKeepsLiveOwner(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+	old := time.Now().Add(-2 * privateProfileMaxAge)
+	makeDir := func(name, owner string) string {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, privateOwnerFile), []byte(owner), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stale := makeDir(privateProfilePrefix+"stale", "1073741824")
+	live := makeDir(privateProfilePrefix+"live", strconv.Itoa(os.Getpid()))
+
+	PruneStalePrivateProfiles(time.Now())
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale profile survived: %v", err)
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("live profile removed: %v", err)
 	}
 }

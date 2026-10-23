@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -18,6 +20,16 @@ const (
 	profileStateFile = "kitty-browse-state.json"
 	profileLockFile  = ".kitty-browse.lock"
 	maxUserAgentLen  = 4096
+
+	privateProfilePrefix = "kitty-browse-private-"
+	privateOwnerFile     = "owner.pid"
+	privateProfileMaxAge = time.Hour
+
+	// MacAppCodeSignClone makes Chromium clone the whole app bundle into
+	// /private/var/folders/.../X on macOS. Automation launchers hit a Chromium
+	// bug where those clones survive the browser (crbug.com/379125944), so keep
+	// the default feature list and disable that one feature.
+	chromiumDisabledFeatures = "Translate,BlinkGenPropertyTrees,MacAppCodeSignClone"
 )
 
 // LaunchOptions controls the Chromium process created from the returned
@@ -84,6 +96,10 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	// leaking into a later launch.
 	allocatorOptions := make([]chromedp.ExecAllocatorOption, len(chromedp.DefaultExecAllocatorOptions))
 	copy(allocatorOptions, chromedp.DefaultExecAllocatorOptions[:])
+	allocatorOptions = append(
+		allocatorOptions,
+		chromedp.Flag("disable-features", chromiumDisabledFeatures),
+	)
 	if opts.BrowserOutput != nil && !opts.Private {
 		allocatorOptions = append(allocatorOptions, chromedp.CombinedOutput(opts.BrowserOutput))
 	}
@@ -101,8 +117,14 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	identity := IdentityOptions{Stealth: opts.Stealth, UserAgent: opts.UserAgent}
 
 	if opts.Private {
+		privateDir, err := preparePrivateProfile()
+		if err != nil {
+			return nil, nil, empty, err
+		}
+		allocatorOptions = append(allocatorOptions, chromedp.UserDataDir(privateDir))
 		downloadDir, temporary, err := prepareDownloadDir(opts.DownloadDir, "")
 		if err != nil {
+			_ = os.RemoveAll(privateDir)
 			return nil, nil, empty, err
 		}
 		ctx, allocatorCancel := chromedp.NewExecAllocator(parent, allocatorOptions...)
@@ -110,6 +132,7 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 		cancel := func() {
 			once.Do(func() {
 				allocatorCancel()
+				_ = os.RemoveAll(privateDir)
 				if temporary {
 					_ = os.RemoveAll(downloadDir)
 				}
@@ -204,6 +227,56 @@ func prepareDownloadDir(configured, profileDir string) (dir string, temporary bo
 		return "", false, fmt.Errorf("secure download directory %q: %w", dir, err)
 	}
 	return dir, temporary, nil
+}
+
+func preparePrivateProfile() (string, error) {
+	dir, err := os.MkdirTemp("", privateProfilePrefix)
+	if err != nil {
+		return "", fmt.Errorf("create private profile directory: %w", err)
+	}
+	owner := filepath.Join(dir, privateOwnerFile)
+	if err := os.WriteFile(owner, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("write private profile owner: %w", err)
+	}
+	return dir, nil
+}
+
+// PruneStalePrivateProfiles removes private Chromium profiles left behind when
+// a previous kitty-browse process was killed before it could cancel its
+// allocator. A profile is kept while the recorded owner PID is alive.
+func PruneStalePrivateProfiles(now time.Time) {
+	root := os.TempDir()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), privateProfilePrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < privateProfileMaxAge {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if pid, ok := readPrivateOwner(path); ok && processAlive(pid) {
+			continue
+		}
+		_ = os.RemoveAll(path)
+	}
+}
+
+func readPrivateOwner(dir string) (int, bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, privateOwnerFile))
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }
 
 func validateUserAgent(userAgent string) error {
