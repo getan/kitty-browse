@@ -298,7 +298,11 @@ func main() {
 		stream.SetViewportSize(geom.ContentWidthPx, geom.ContentHeightPx)
 		stream.SetCellSize(cols, geom.ContentRows)
 		resetScroller()
-		haveStill = false
+		// A still captured for the old viewport has the old pixel dimensions and
+		// the old cell box. Without forcing a new capture, a grown pane keeps the
+		// smaller image anchored at the top, leaving a gap at the bottom that
+		// reads as "the page shifted up".
+		haveStill, lastStill, lastStillFor = false, time.Time{}, time.Time{}
 		debugf("updated geometry=%+v cell pixels=%+v", geom, pixels)
 		if model.TextMode {
 			screen.Text(model.TextView(screen.BodyRows(), cols))
