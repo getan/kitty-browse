@@ -214,3 +214,38 @@ func mustGetwd(t *testing.T) string {
 	}
 	return dir
 }
+
+// A persistent profile keeps cookies and logins, not the last window's tabs:
+// otherwise a killed browser comes back with its old tabs, one of them active,
+// and the page this process opened sits in the background.
+func TestDiscardRestoredSessionKeepsTheRestOfTheProfile(t *testing.T) {
+	root := t.TempDir()
+	profile := filepath.Join(root, "Default")
+	if err := os.MkdirAll(filepath.Join(profile, "Sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Current Session", "Current Tabs", "Last Session", "Last Tabs"} {
+		if err := os.WriteFile(filepath.Join(profile, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(profile, "Cookies")
+	if err := os.WriteFile(keep, []byte("login"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := discardRestoredSession(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(profile, "Sessions")); !os.IsNotExist(err) {
+		t.Errorf("Sessions directory survived: %v", err)
+	}
+	for _, name := range []string{"Current Session", "Current Tabs", "Last Session", "Last Tabs"} {
+		if _, err := os.Stat(filepath.Join(profile, name)); !os.IsNotExist(err) {
+			t.Errorf("%s survived: %v", name, err)
+		}
+	}
+	if data, err := os.ReadFile(keep); err != nil || string(data) != "login" {
+		t.Errorf("Cookies changed: %q %v", data, err)
+	}
+}

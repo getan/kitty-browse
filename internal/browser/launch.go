@@ -120,6 +120,13 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	if err := prepareProfileDir(profileDir); err != nil {
 		return nil, nil, empty, err
 	}
+	// A profile is persistent so cookies and logins survive, not so the last
+	// window's tabs come back: the browser shows what this process opened. Left
+	// alone, a profile from a process that was killed restores its old tabs and
+	// activates one of them, pushing the requested page into the background.
+	if err := discardRestoredSession(profileDir); err != nil {
+		return nil, nil, empty, err
+	}
 	downloadDir, _, err := prepareDownloadDir(opts.DownloadDir, profileDir)
 	if err != nil {
 		return nil, nil, empty, err
@@ -237,6 +244,26 @@ func prepareProfileDir(dir string) error {
 	// parent selected by the user.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("secure profile directory %q: %w", dir, err)
+	}
+	return nil
+}
+
+// discardRestoredSession removes the files Chromium uses to reopen a previous
+// window. It touches nothing else in the profile: cookies, storage and history
+// stay.
+func discardRestoredSession(profileDir string) error {
+	profile := filepath.Join(profileDir, "Default")
+	targets := []string{
+		filepath.Join(profile, "Sessions"),
+		filepath.Join(profile, "Current Session"),
+		filepath.Join(profile, "Current Tabs"),
+		filepath.Join(profile, "Last Session"),
+		filepath.Join(profile, "Last Tabs"),
+	}
+	for _, path := range targets {
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("discard restored session %q: %w", path, err)
+		}
 	}
 	return nil
 }
