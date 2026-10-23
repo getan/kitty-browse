@@ -109,9 +109,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var browserOutput io.Writer
+	if debugLog != nil {
+		browserOutput = chromiumLogWriter{logger: debugLog}
+		debugf("build version=%s commit=%s fps=%g quality=%d maxViewport=%dx%d", version, commit, *fps, *quality, *maxWidth, *maxHeight)
+	}
 	browserCtx, closeAlloc, profile, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
 		ExecutablePath: *chrome, ProfileDir: *profileDir, DownloadDir: *downloadDir, Private: *private,
-		Stealth: *stealth, UserAgent: *userAgent,
+		Stealth: *stealth, UserAgent: *userAgent, BrowserOutput: browserOutput,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -125,6 +130,7 @@ func main() {
 	}
 	defer tabs.Close()
 	sess := tabs.Active()
+	logBrowserDiagnostics(sess)
 	if err := sess.LoadError(); err != nil {
 		// The browser stays on Chromium's error page; say why once, since the
 		// page itself is all the person sees.
@@ -182,7 +188,7 @@ func main() {
 	}
 	defer func() { stream.Stop() }()
 	defer func() { _ = screen.WriteBody(stream.Clear) }()
-	debugf("render started")
+	debugf("render transport started; waiting for first image target=%s", sess.TargetID())
 
 	model := ui.New(sess.URL())
 	model.Private = profile.Private
@@ -216,6 +222,44 @@ func main() {
 	var reportedScrollError bool
 	var receivedFrames int
 	var resizePending bool
+	var probe stillProbe
+	defer probe.stop()
+	health := newRenderHealth(time.Now())
+	var renderStatus renderNotice
+	renderStatus.set(&model.Status, "Waiting for first page image...")
+	drawChrome(screen, model, store)
+	resetRenderHealth := func() {
+		probe.stop()
+		renderStatus.clear(&model.Status)
+		health = newRenderHealth(time.Now())
+		haveStill = false
+		lastStill, lastStillFor = time.Time{}, time.Time{}
+	}
+	showRenderFailure := func() {
+		if health.exhausted {
+			debugf("render unavailable; recovery exhausted target=%s restarts=%d failures=%d stats=%+v",
+				sess.TargetID(), health.restarts, health.failures, stream.Stats())
+			renderStatus.set(&model.Status, renderUnavailable)
+			// No image has ever been shown: replace the unexplained black area
+			// with a useful message. Otherwise keep the last good image.
+			if lastImage == nil && !model.TextMode {
+				screen.Text([]string{"Page image unavailable.", "Automatic recovery stopped after 2 attempts.", "Reload or switch tabs to retry."})
+			}
+		} else if health.waitingTooLong(time.Now()) {
+			renderStatus.set(&model.Status, "No first page image yet; checking renderer...")
+		} else {
+			renderStatus.set(&model.Status, "Page image capture failed; checking renderer...")
+		}
+		drawChrome(screen, model, store)
+	}
+	frameReady := func(source string) {
+		if health.frame() {
+			debugf("render ready source=%s target=%s viewport=%dx%d restarts=%d stats=%+v",
+				source, sess.TargetID(), geom.ContentWidthPx, geom.ContentHeightPx, health.restarts, stream.Stats())
+			renderStatus.clear(&model.Status)
+			drawChrome(screen, model, store)
+		}
+	}
 	// fitWidth and fitHeight widen the virtual viewport when a page's layout is
 	// wider than the pane; see fitPageWidth.
 	var fitWidth, fitHeight int
@@ -237,6 +281,7 @@ func main() {
 	}
 
 	applyViewport := func() error {
+		probe.stop()
 		scroller.Stop()
 		width, height := *maxWidth, *maxHeight
 		if width == 0 && fitWidth > 0 {
@@ -289,21 +334,26 @@ func main() {
 		}
 	}
 	activateTab := func() error {
+		probe.stop()
 		nextSession := tabs.Active()
 		nextModel := tabModels[tabs.Index()]
 		if err := nextSession.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx); err != nil {
 			return err
 		}
+		// Stop before starting: the old StopScreencast would otherwise stop the
+		// new stream too when an action reselects the current target.
+		stream.Stop()
 		next, err := startTabStream(nextSession, geom, *fps, *quality)
 		if err != nil {
 			return err
 		}
-		stream.Stop()
 		sess, model = nextSession, nextModel
 		stream = next
 		lastImage = nil
 		lastStill, lastStillFor = time.Time{}, time.Time{}
 		haveStill, reportedRenderError = false, false
+		resetRenderHealth()
+		renderStatus.set(&model.Status, "Waiting for first page image...")
 		receivedFrames = 0
 		cacheTabTitle(titles, sess)
 		syncTabChrome(model, tabs, titles)
@@ -448,6 +498,9 @@ func main() {
 				case "reload":
 					err = selected.Reload(call.ctx, *load)
 				}
+				if selected == sess {
+					resetRenderHealth()
+				}
 				resetScroller()
 				if err != nil {
 					return nil, err
@@ -480,6 +533,7 @@ func main() {
 			debugf("ctx done")
 			return
 		case call := <-bridge.calls:
+			probe.stop()
 			handleHostAction(call)
 		case <-resize:
 			rows, cols = screen.Refresh()
@@ -572,28 +626,70 @@ func main() {
 				reportedScrollError = true
 			}
 			if err := stream.Err(); err != nil && !reportedRenderError {
-				debugf("render transport error: %v", err)
-				model.Status = err.Error()
-				drawChrome(screen, model, store)
+				debugf("render transport error target=%s stats=%+v: %v", sess.TargetID(), stream.Stats(), err)
+				health.transportFailed()
+				showRenderFailure()
 				reportedRenderError = true
 			}
 			if model.TextMode || scroller.Busy() || events.Stats().Pending != 0 {
+				probe.stop()
 				continue
 			}
-			if last := stream.LastFrame(); shouldCaptureStill(time.Now(), last, lastStill, lastStillFor, haveStill) {
-				// Also seed an initial frame when screencast produces no event.
-				// Throttle attempts on failure as well as success.
-				lastStill = time.Now()
-				if img, err := stream.Still(ctx); err != nil {
-					debugf("still capture error: %v", err)
-					model.Status = err.Error()
-					drawChrome(screen, model, store)
+			if bridge.active.Load() > 0 || health.exhausted {
+				continue // don't interfere with a native action, or retry forever
+			}
+			if health.recoveryDue(time.Now()) {
+				probe.stop()
+				health.restarting(time.Now())
+				renderStatus.set(&model.Status, fmt.Sprintf("Recovering page image (%d/%d)...", health.restarts, maxRenderRestarts))
+				drawChrome(screen, model, store)
+				debugf("render recovery attempt=%d/%d target=%s viewport=%dx%d stats=%+v",
+					health.restarts, maxRenderRestarts, sess.TargetID(), geom.ContentWidthPx, geom.ContentHeightPx, stream.Stats())
+				// Restart only image transport, never the browser or document.
+				scroller.Stop()
+				stream.Stop()
+				next, err := startTabStream(sess, geom, *fps, *quality)
+				if err != nil {
+					debugf("render recovery failed target=%s: %v", sess.TargetID(), err)
+					health.transportFailed()
+					showRenderFailure()
 				} else {
-					debugf("still frame %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
-					drawFrame(screen, stream, img, model, store)
-					lastImage = img
-					lastStillFor, haveStill = last, true
+					stream = next
+					reportedRenderError, haveStill = false, false
+					receivedFrames = 0
 				}
+				lastStill = time.Now()
+				resetScroller()
+				continue
+			}
+			if health.waitingTooLong(time.Now()) && renderStatus.text != "No first page image yet; checking renderer..." {
+				showRenderFailure()
+			}
+			if last := stream.LastFrame(); probe.result == nil && shouldCaptureStill(time.Now(), last, lastStill, lastStillFor, haveStill) {
+				// Also seed an initial frame when screencast produces no event.
+				// The bounded PNG request runs off the UI goroutine: the first-frame
+				// warning, tab controls and native actions remain responsive.
+				lastStill = time.Now()
+				probe.start(ctx, last, stream.Still)
+			}
+		case result := <-probe.result:
+			probe.stop()
+			if result.err != nil {
+				debugf("still capture error target=%s viewport=%dx%d stats=%+v: %v",
+					sess.TargetID(), geom.ContentWidthPx, geom.ContentHeightPx, stream.Stats(), result.err)
+				// Don't restart a working screencast just because a concurrent PNG
+				// failed. It may already have supplied an image to the UI.
+				if !stream.LastFrame().After(result.started) && len(stream.Frames()) == 0 {
+					health.failed()
+					showRenderFailure()
+				}
+			} else if img := result.image; img != nil {
+				debugf("still frame %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
+				if drawFrame(screen, stream, img, model, store) {
+					frameReady("PNG")
+				}
+				lastImage = img
+				lastStillFor, haveStill = result.forFrame, true
 			}
 		case <-events.Ready():
 			ev, ok := events.Pop()
@@ -709,6 +805,7 @@ func main() {
 			}
 			debugf("action kind=%d url=%s label=%s", action.Kind, debugURL(action.URL), action.Label)
 			if interruptsScroll(action.Kind) {
+				probe.stop()
 				scroller.Stop()
 			}
 			switch action.Kind {
@@ -814,6 +911,7 @@ func main() {
 				resetScroller()
 			}
 			if action.Kind == ui.ActionNavigate || action.Kind == ui.ActionBack || action.Kind == ui.ActionForward || action.Kind == ui.ActionReload || action.Kind == ui.ActionOverlaySelect {
+				resetRenderHealth()
 				cacheTabTitle(titles, sess)
 			}
 			syncTabChrome(model, tabs, titles)
@@ -828,7 +926,9 @@ func main() {
 			if !model.TextMode {
 				// Decode is already frame-paced. Drawing here avoids an extra
 				// whole UI-ticker interval of latency after every captured frame.
-				drawFrame(screen, stream, img, model, store)
+				if drawFrame(screen, stream, img, model, store) {
+					frameReady("screencast")
+				}
 			}
 		}
 	}
@@ -962,19 +1062,20 @@ func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, tim
 	return true
 }
 
-func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image, model *ui.Model, store *history.Store) {
+func drawFrame(screen *term.Screen, stream *render.Stream, img image.Image, model *ui.Model, store *history.Store) bool {
 	if img == nil || screen.BodyRows() == 0 {
-		return
+		return false
 	}
 	if err := screen.WriteBody(func(w io.Writer) error {
 		return stream.Draw(w, img)
 	}); err != nil {
 		// A broken pipe or a terminal that went away is a normal exit path.
 		debugf("draw frame error: %v", err)
-		return
+		return false
 	}
 	// The chrome stays unchanged during a frame update; writing it per frame
 	// needlessly makes tuios repaint terminal cells throughout a gesture.
+	return true
 }
 
 func drawChrome(screen *term.Screen, model *ui.Model, store *history.Store) {

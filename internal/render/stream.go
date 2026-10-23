@@ -133,11 +133,15 @@ func Start(ctx context.Context, cfg Config) (*Stream, error) {
 	rctx, cancel := context.WithCancel(ctx)
 	frames := chromedp.Events(rctx, page.ScreencastFrame)
 	quality := int64(cfg.Quality)
-	if _, err := chromedp.Call(rctx, page.StartScreencast, page.StartScreencastParams{
+	// Bound the command, not the stream's lifetime.
+	startCtx, startCancel := context.WithTimeout(rctx, 5*time.Second)
+	_, err = chromedp.Call(startCtx, page.StartScreencast, page.StartScreencastParams{
 		Format:        page.StartScreencastFormatJpeg,
 		Quality:       &quality,
 		EveryNthFrame: 1,
-	}); err != nil {
+	})
+	startCancel()
+	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("start screencast: %w", err)
 	}

@@ -447,6 +447,33 @@ they do **not** measure when the host terminal actually displayed the pixels.
 image pixels; a blank body in those captures is not evidence of missing frames.
 Check the visible pane for the blue test page and orange swatch.
 
+### Render health and bounded recovery
+
+A successful `StartScreencast` command is only transport readiness. The footer
+initially says `Waiting for first page image...`; only an image actually written
+to the terminal marks rendering ready. If no image arrives within five seconds,
+the footer reports that explicitly. PNG fallback requests run off the UI loop,
+one at a time, with a five-second deadline. Switching tabs, navigating or resizing
+cancels the old request, so a late image cannot overwrite a different page.
+
+Two consecutive failed PNG captures, or a screencast transport error, trigger
+a stop/start of **image transport on the same tab**. There are at most two
+automatic restarts per selected-tab/navigation cycle, with backoff; briefly
+receiving an image does not replenish that budget. Static pages are not failures
+just because they stop emitting new frames. The browser is never restarted and
+the document is not reloaded, preserving logins and unsaved page state.
+
+If recovery is exhausted, automatic capture attempts stop. The footer says
+`Page image unavailable; automatic recovery stopped`. The last good image stays
+visible; if there was none, the body shows a textual explanation instead of an
+unexplained black pane. Reload or switch tabs to explicitly retry; a late real
+frame can also clear the warning.
+
+With `KITTY_BROWSE_DEBUG` enabled, the log includes Chromium version/PID, target,
+viewport, pipeline counters, recovery attempts and quoted Chromium output.
+Logging is opt-in and disabled in private mode. Browser diagnostic output can
+contain browsing information; do not publish it without reviewing it.
+
 ## References
 
 - [`chromedp/termcast`](https://github.com/chromedp/termcast) — MIT

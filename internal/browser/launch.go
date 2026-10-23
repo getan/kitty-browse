@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,9 @@ type LaunchOptions struct {
 	UserAgent      string
 	Private        bool
 	Stealth        bool
+	// BrowserOutput receives Chromium's diagnostic output only when explicitly
+	// provided. Private mode ignores it, just like kitty-browse's debug log.
+	BrowserOutput io.Writer
 }
 
 // ProfileInfo describes the kitty-browse-owned data associated with a browser
@@ -80,6 +84,9 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	// leaking into a later launch.
 	allocatorOptions := make([]chromedp.ExecAllocatorOption, len(chromedp.DefaultExecAllocatorOptions))
 	copy(allocatorOptions, chromedp.DefaultExecAllocatorOptions[:])
+	if opts.BrowserOutput != nil && !opts.Private {
+		allocatorOptions = append(allocatorOptions, chromedp.CombinedOutput(opts.BrowserOutput))
+	}
 	if opts.ExecutablePath != "" {
 		allocatorOptions = append(allocatorOptions, chromedp.ExecPath(opts.ExecutablePath))
 	}
