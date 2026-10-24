@@ -3,9 +3,11 @@
 package browserhost
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -154,14 +156,18 @@ func TestHostServesTheControlContractIntegration(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), hostRequestTimeout)
 	defer cancel()
-	// The screenshot route is Chromium's own capture. Some Chromium builds fail
-	// that CDP call on this platform (the repository's own
-	// internal/browser TestScreenshotIntegration fails the same way), so a
-	// capture failure is reported rather than treated as a contract regression.
-	if png, err := control.Capture(ctx, socket, false); err != nil {
-		t.Logf("screenshot capture unavailable with this Chromium build: %v", err)
-	} else if len(png) < 8 || string(png[1:4]) != "PNG" {
-		t.Fatalf("screenshot is not a PNG: %d bytes", len(png))
+	// Once Chromium is available a broken screenshot is a failed contract,
+	// not a successful integration with a diagnostic line.
+	data, err := control.Capture(ctx, socket, false)
+	if err != nil {
+		t.Fatalf("screenshot capture: %v", err)
+	}
+	image, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode screenshot pixels: %v", err)
+	}
+	if got := image.Bounds(); got.Dx() != 1280 || got.Dy() != 800 {
+		t.Fatalf("screenshot bounds = %v, want 1280x800", got)
 	}
 
 	quit := hostAction(t, socket, "quit", "{}")
