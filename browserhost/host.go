@@ -220,6 +220,11 @@ func (h *Host) serve(ctx context.Context, load time.Duration) {
 				continue
 			}
 			if changed, err := h.tabs.Reconcile(ctx); err == nil && changed {
+				// A page or popup an external client closed dies without a
+				// tab.close action, so reconcile is where its cached title has
+				// to go: the cache is keyed by session pointer and would
+				// otherwise hold a dead session for the browser's lifetime.
+				h.pruneTitles()
 				for _, sess := range h.tabs.Sessions() {
 					host.CacheTitle(h.titles, sess)
 				}
@@ -330,6 +335,9 @@ func (h *Host) handle(ctx context.Context, call host.Call, load time.Duration) {
 }
 
 func (h *Host) refresh() { h.bridge.Update(h.tabs, h.titles) }
+
+// pruneTitles drops cached titles for sessions the tab set no longer has.
+func (h *Host) pruneTitles() { host.PruneTitles(h.titles, h.tabs.Sessions()) }
 
 // applyViewport keeps every newly active tab at the host's emulated page size,
 // so screenshots and coordinates mean the same thing on any tab.

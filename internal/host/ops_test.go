@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/getan/kitty-browse/internal/action"
+	"github.com/getan/kitty-browse/internal/browser"
 )
 
 // quit is part of the host contract: a client asks for a graceful shutdown
@@ -114,4 +115,44 @@ func TestBridgeRejectsUnadvertisedAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertResponseError(t, responseRaw, "unsupported_action")
+}
+
+// The title cache is keyed by session pointer, so a page or popup closed by an
+// external client (never through tab.close) would otherwise be kept forever and
+// keep appearing in the tab-strip document. Pruning is what reconcile does.
+func TestPruneTitlesDropsSessionsTheTabSetNoLongerHas(t *testing.T) {
+	live := &browser.Session{}
+	externallyClosed := &browser.Session{}
+	titles := map[*browser.Session]string{live: "live page", externallyClosed: "closed page"}
+
+	PruneTitles(titles, []*browser.Session{live})
+
+	if _, ok := titles[externallyClosed]; ok {
+		t.Fatalf("titles kept a session the tab set no longer has: %+v", titles)
+	}
+	if titles[live] != "live page" {
+		t.Fatalf("pruning dropped a live title: %+v", titles)
+	}
+	if len(titles) != 1 {
+		t.Fatalf("titles = %+v, want one entry", titles)
+	}
+}
+
+// Pruning must be harmless on every reconcile that changed nothing about titles:
+// an empty cache, a nil tab slice and an empty cache with live sessions.
+func TestPruneTitlesIsHarmlessWhenNothingIsStale(t *testing.T) {
+	PruneTitles(nil, nil)
+	PruneTitles(map[*browser.Session]string{}, nil)
+	first, second := &browser.Session{}, &browser.Session{}
+	titles := map[*browser.Session]string{first: "one", second: "two"}
+	PruneTitles(titles, []*browser.Session{first, nil, second})
+	if len(titles) != 2 || titles[first] != "one" || titles[second] != "two" {
+		t.Fatalf("pruning disturbed live titles: %+v", titles)
+	}
+	// A tab set that lost every user tab (all pages closed externally) leaves no
+	// title behind.
+	PruneTitles(titles, nil)
+	if len(titles) != 0 {
+		t.Fatalf("titles survived an empty tab set: %+v", titles)
+	}
 }

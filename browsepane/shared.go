@@ -25,3 +25,7 @@ func resolveHostTabID(info action.Info, req *action.Request) error {
 func cacheTabTitle(titles map[*browser.Session]string, sess *browser.Session) {
 	host.CacheTitle(titles, sess)
 }
+
+func pruneTabTitles(titles map[*browser.Session]string, sessions []*browser.Session) {
+	host.PruneTitles(titles, sessions)
+}

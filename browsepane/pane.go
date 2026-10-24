@@ -8,10 +8,13 @@
 // never calls os.Exit, never touches flag.CommandLine and installs no signal
 // handler that outlives it, so a host application such as golder can serve the
 // same pane from its own binary.
+//
+// Run reads stdin only while it runs: it stops and joins its input reader on
+// every exit path, and it never closes the streams the caller handed it, so the
+// caller reads its own stdin again the moment the pane is gone.
 package browsepane
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -208,7 +211,14 @@ func runPane(ctx context.Context, opts Options) error {
 	drawChrome(screen, model, store)
 
 	events := newInputQueue(64)
-	go readInput(ctx, in, events)
+	// The pump owns its own cancelable context and interruptible reader, so
+	// every exit path below stops reading and joins the goroutine before the
+	// pane returns and the host application reads stdin again.
+	input, err := startInput(ctx, in, events)
+	if err != nil {
+		return err
+	}
+	defer input.stop()
 	if *measure {
 		screen.QueryPixels()
 	}
@@ -591,6 +601,9 @@ func runPane(ctx context.Context, opts Options) error {
 			}
 			before := tabs.Sessions()
 			if changed, err := tabs.Reconcile(ctx); err == nil && changed {
+				// Tabs an external client closed are gone from the tab set, so
+				// their cached titles go with them.
+				pruneTabTitles(titles, tabs.Sessions())
 				remembered := make(map[*browser.Session]*ui.Model)
 				for i, old := range before {
 					if i < len(tabModels) {
@@ -1039,23 +1052,6 @@ func forwardPageKey(sess *browser.Session, ev term.Event) bool {
 		return false
 	}
 	return true
-}
-
-func readInput(ctx context.Context, in *os.File, events *inputQueue) {
-	r := bufio.NewReaderSize(in, 4096)
-	for {
-		ev, err := term.ReadEvent(r)
-		if err != nil {
-			debugf("input error: %v", err)
-			return
-		}
-		if ev.Kind == term.KeyText && ev.Rune == 0 {
-			continue
-		}
-		if !events.Push(ctx, ev) {
-			return
-		}
-	}
 }
 
 func runNavigation(sess *browser.Session, model *ui.Model, action ui.Action, timeout time.Duration) bool {

@@ -138,6 +138,28 @@ func CacheTitle(titles map[*browser.Session]string, sess *browser.Session) {
 	}
 }
 
+// PruneTitles drops cached titles for sessions that are no longer live. The
+// cache is keyed by session pointer, so a session closed by an external client
+// or a closed popup would otherwise stay in the map, and in the tab-strip
+// document, for as long as the browser lives. Tab sets that reconcile against
+// Chromium call this after every reconcile.
+func PruneTitles(titles map[*browser.Session]string, sessions []*browser.Session) {
+	if len(titles) == 0 {
+		return
+	}
+	live := make(map[*browser.Session]struct{}, len(sessions))
+	for _, sess := range sessions {
+		if sess != nil {
+			live[sess] = struct{}{}
+		}
+	}
+	for sess := range titles {
+		if _, ok := live[sess]; !ok {
+			delete(titles, sess)
+		}
+	}
+}
+
 // Quit is the one-shot shutdown request shared by the /v1/quit endpoint, the
 // typed "quit" action and a host's own context. Request is safe to call from any
 // goroutine and any number of times.
