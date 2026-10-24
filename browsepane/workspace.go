@@ -1,7 +1,6 @@
-package main
+package browsepane
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"net/url"
@@ -83,14 +82,6 @@ func startTabStream(sess *browser.Session, g term.Geometry, fps float64, quality
 		FPS: fps, Quality: quality, Width: g.ContentWidthPx, Height: g.ContentHeightPx,
 		Cols: g.Cols, Rows: g.ContentRows,
 	})
-}
-
-func cacheTabTitle(titles map[*browser.Session]string, sess *browser.Session) {
-	ctx, cancel := context.WithTimeout(sess.Context(), time.Second)
-	defer cancel()
-	if title, err := sess.Title(ctx); err == nil {
-		titles[sess] = title
-	}
 }
 
 func syncTabChrome(model *ui.Model, tabs *browser.Tabs, titles map[*browser.Session]string) {

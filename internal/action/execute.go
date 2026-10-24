@@ -40,7 +40,7 @@ func Execute(ctx context.Context, req Request, sess *browser.Session) (json.RawM
 		return nil, err
 	}
 	switch req.Action {
-	case "navigate", "back", "forward", "reload", "tab.list", "tab.new", "tab.close", "tab.activate", "set.viewport", "info", "capabilities", "done":
+	case "navigate", "back", "forward", "reload", "tab.list", "tab.new", "tab.close", "tab.activate", "set.viewport", "info", "capabilities", "done", "quit":
 		return nil, actionError("host_action_required", req.Action+" is managed by kitty-browse", false)
 	}
 	knownAutomation := automationAction(req.Action)

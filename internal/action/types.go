@@ -344,5 +344,6 @@ func Capabilities() []Capability {
 		cap("tab.list", "Host-managed tab listing.", true, empty), cap("tab.new", "Host-managed tab creation.", false, map[string]any{"url": str}),
 		cap("tab.close", "Host-managed tab closure.", false, map[string]any{"tabId": str}), cap("tab.activate", "Host-managed tab activation.", false, map[string]any{"tabId": str}),
 		cap("info", "Host-managed API information.", true, empty), cap("capabilities", "Host-managed capability listing.", true, empty), cap("done", "Host-managed action mode completion.", false, empty),
+		cap("quit", "Host-managed graceful browser shutdown; the reply is sent before the control socket closes.", false, empty),
 	}
 }

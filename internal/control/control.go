@@ -41,9 +41,15 @@ type InfoFunc func(context.Context) (json.RawMessage, error)
 // ActionFunc executes a JSON action request and returns its JSON response.
 type ActionFunc func(context.Context, json.RawMessage) (json.RawMessage, error)
 
+// QuitFunc asks the browser to shut down gracefully. It is called after the
+// quit response has been flushed to the caller, so the answer is never lost to
+// the teardown it triggers.
+type QuitFunc func(context.Context)
+
 type serverConfig struct {
 	info   InfoFunc
 	action ActionFunc
+	quit   QuitFunc
 }
 
 // Option configures optional control server functionality.
@@ -55,6 +61,15 @@ func WithAPI(info InfoFunc, action ActionFunc) Option {
 	return func(c *serverConfig) {
 		c.info = info
 		c.action = action
+	}
+}
+
+// WithQuit enables the graceful shutdown route. A nil callback leaves
+// /v1/quit disabled, exactly like a nil API callback leaves /v1/actions
+// disabled.
+func WithQuit(quit QuitFunc) Option {
+	return func(c *serverConfig) {
+		c.quit = quit
 	}
 }
 
@@ -98,6 +113,8 @@ func controlHandler(capture CaptureFunc, config serverConfig) http.Handler {
 			infoHandler(config.info).ServeHTTP(w, r)
 		case exactPath(r, "/v1/actions") && config.action != nil:
 			actionHandler(config.action).ServeHTTP(w, r)
+		case exactPath(r, "/v1/quit") && config.quit != nil:
+			quitHandler(config.quit).ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -201,6 +218,47 @@ func requestID(request []byte) json.RawMessage {
 		return value.ID
 	}
 	return nil
+}
+
+// quitHandler answers POST /v1/quit. The socket file's owner-only mode is the
+// whole authorization, exactly as for /v1/actions: a caller that can write to
+// this socket could already drive the same browser through the action API.
+func quitHandler(quit QuitFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeAPIError(w, http.StatusMethodNotAllowed, nil, "invalid_request", "method not allowed", false)
+			return
+		}
+		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, maxRequestSize))
+		body, err := json.Marshal(quitEnvelope{APIVersion: "v1", ID: json.RawMessage("null"), OK: true,
+			Result: quitResult{Quitting: true}})
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, nil, "internal_error", "internal error", false)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		// Flush, then ask the host to stop: a client always receives the answer
+		// even though the socket disappears immediately afterwards.
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		quit(context.WithoutCancel(r.Context()))
+	})
+}
+
+type quitEnvelope struct {
+	APIVersion string          `json:"apiVersion"`
+	ID         json.RawMessage `json:"id"`
+	OK         bool            `json:"ok"`
+	Result     quitResult      `json:"result"`
+}
+
+type quitResult struct {
+	Quitting bool `json:"quitting"`
 }
 
 func writeAPICallbackResult(w http.ResponseWriter, ctx context.Context, id, response json.RawMessage, err error) {

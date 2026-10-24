@@ -1,4 +1,4 @@
-package main
+package host
 
 import (
 	"context"
@@ -10,13 +10,24 @@ import (
 	"github.com/getan/kitty-browse/internal/browser"
 )
 
-func testBridge(tabs []action.TabInfo) *actionBridge {
-	b := newActionBridge("browser-test")
+func assertResponseError(t *testing.T, raw json.RawMessage, code string) {
+	t.Helper()
+	var response action.Response
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.OK || response.Error == nil || response.Error.Code != code {
+		t.Fatalf("response = %s, want error %q", raw, code)
+	}
+}
+
+func testBridge(tabs []action.TabInfo) *Bridge {
+	b := NewBridge("browser-test")
 	info := action.Info{APIVersion: action.APIVersion, BrowserID: "browser-test", Backend: action.Backend, Tabs: tabs, Capabilities: action.Capabilities()}
 	if len(tabs) != 0 {
 		info.ActiveTabID = tabs[0].ID
 	}
-	b.view.Store(&actionView{info: info, sessions: make(map[string]*browser.Session)})
+	b.view.Store(&Snapshot{Info: info, Sessions: make(map[string]*browser.Session)})
 	return b
 }
 
@@ -28,7 +39,7 @@ func TestActionBridgeRejectsUnknownParamsBeforeCDP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	responseRaw, err := b.execute(context.Background(), raw)
+	responseRaw, err := b.Execute(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,12 +54,12 @@ func TestActionBridgeBrowserScopedCallNeedsNoTab(t *testing.T) {
 	done := make(chan json.RawMessage, 1)
 	go func() {
 		raw, _ := json.Marshal(action.Request{ID: "r", Action: "tab.new", Params: json.RawMessage(`{"url":"about:blank"}`)})
-		result, _ := b.execute(context.Background(), raw)
+		result, _ := b.Execute(context.Background(), raw)
 		done <- result
 	}()
 	select {
-	case call := <-b.calls:
-		call.reply <- action.Respond(call.req, b.view.Load().info, action.TabInfo{}, json.RawMessage(`{"created":true}`), nil)
+	case call := <-b.Calls:
+		call.Reply <- action.Respond(call.Req, b.Load().Info, action.TabInfo{}, json.RawMessage(`{"created":true}`), nil)
 	case <-time.After(time.Second):
 		t.Fatal("browser-scoped action was rejected before reaching the UI host")
 	}
@@ -70,7 +81,7 @@ func TestActionBridgeHasBoundedRequestAdmission(t *testing.T) {
 		b.limit <- struct{}{}
 	}
 	raw, _ := json.Marshal(action.Request{ID: "r", Action: "get", Params: json.RawMessage(`{"kind":"url"}`)})
-	result, err := b.execute(context.Background(), raw)
+	result, err := b.Execute(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -43,6 +43,7 @@ func TestParseCommand(t *testing.T) {
 		{"goto means navigate", []string{"goto", "https://example.test"}, "navigate", map[string]any{"url": "https://example.test"}, ""},
 		{"viewport", []string{"set", "viewport", "800", "600"}, "set.viewport", map[string]any{"width": float64(800), "height": float64(600)}, ""},
 		{"screenshot", []string{"screenshot", "shot.png", "--full"}, "screenshot", map[string]any{"path": "shot.png", "full": true}, ""},
+		{"quit", []string{"quit"}, "quit", map[string]any{}, ""},
 		{"unknown", []string{"launch"}, "", nil, "unsupported_action"},
 		{"bad arguments", []string{"fill", "#only"}, "", nil, "invalid_arguments"},
 	}

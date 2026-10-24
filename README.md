@@ -250,6 +250,68 @@ closed-shadow piercing and WebMCP are not currently exposed. See
 [`skill/kitty-browse/SKILL.md`](skill/kitty-browse/SKILL.md) for the golder
 workflow.
 
+### Graceful shutdown over the socket
+
+`POST /v1/quit` asks the browser to shut down. It is the supported way for a
+parent process to close a browser it started, instead of injecting keystrokes
+into a pane or matching executable names. The response is written and flushed
+before the host tears itself down, so the caller always receives an answer:
+
+```bash
+curl --silent --show-error --unix-socket "$SOCKET" -X POST http://unix/v1/quit
+# {"apiVersion":"v1","id":null,"ok":true,"result":{"quitting":true}}
+```
+
+The typed action `quit` does the same thing through `/v1/actions` and returns
+`{"quitting":true}`. Both follow the existing security model: the socket file is
+owner-only (`0600`) in a directory other users cannot write, and nothing else
+authenticates a request. The route exists only when the host enables it, and it
+answers `405` to any method other than `POST`, like `/v1/actions`.
+
+## Embedding in another Go binary
+
+golder ships one binary. Instead of installing `kitty-browse` separately, it
+imports two public packages from this module; Chromium remains the only runtime
+prerequisite either way.
+
+```go
+import (
+	"github.com/getan/kitty-browse/browsepane"   // the visible pane
+	"github.com/getan/kitty-browse/browserhost"  // headless, same control API
+)
+
+// golder's hidden `golder browse ...` subcommand:
+err := browsepane.Run(ctx, browsepane.Options{
+	Args:    args,            // the same flags, subcommands and optional URL
+	Stdin:   os.Stdin,        // the pane's terminal
+	Stdout:  os.Stdout,
+	Stderr:  os.Stderr,
+	Name:    "golder browse",
+	Version: "golder 1.2.3 (kitty-browse 0.6.0)",
+})
+```
+
+- `browsepane.Run` owns the whole visible experience — tab strip, toolbar, mouse
+  and keyboard input, kitty/iTerm2/Sixel frames, and the control socket. It
+  returns an error instead of calling `os.Exit`, never touches
+  `flag.CommandLine`, and stops the `SIGWINCH` subscription it installed (or
+  takes `Options.Resize`) before returning. Cancelling `ctx` closes the
+  renderer, Chromium and the control socket.
+- `browserhost.Start(ctx, browserhost.Options{...})` runs the same browser
+  headless behind the same `/v1/info`, `/v1/actions`, `/v1/screenshot` and
+  `/v1/quit` API. Page actions execute through the same code as the pane, and
+  host-managed actions (navigate, tabs, viewport, quit) go through the same
+  `internal/host` operations, so the two hosts cannot drift. `Host.Wait()`
+  returns after a graceful quit or a cancelled context; `Host.Close()` asks for
+  one.
+- Flags, subcommands (`action`, `info`, `screenshot`, version) and exit statuses
+  of the standalone binary are unchanged; `cmd/kitty-browse` is now a thin
+  wrapper over `browsepane`.
+- Both packages build with `CGO_ENABLED=0` for Linux, macOS and Windows. The
+  owner-only control socket, and therefore the automation API, needs
+  Unix-domain sockets: on Windows the library compiles and the pane runs, but
+  `-control-socket` reports that the platform is unsupported.
+
 ## Controls
 
 The top **two rows are mouse-clickable TUI controls**, not part of the webpage:

@@ -147,6 +147,29 @@ func Action(ctx context.Context, socketPath string, request json.RawMessage) (js
 	return requestJSON(ctx, socketPath, http.MethodPost, "/v1/actions", request)
 }
 
+// Quit asks the browser on socketPath to shut down gracefully. The reply is the
+// last document the socket serves: the host tears itself down only after the
+// answer has been flushed.
+func Quit(ctx context.Context, socketPath string) error {
+	raw, err := requestJSON(ctx, socketPath, http.MethodPost, "/v1/quit", nil)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Quitting bool `json:"quitting"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return fmt.Errorf("control API returned an invalid quit response: %w", err)
+	}
+	if !response.OK || !response.Result.Quitting {
+		return errors.New("control API did not confirm shutdown")
+	}
+	return nil
+}
+
 func requestJSON(ctx context.Context, socketPath, method, path string, body json.RawMessage) (json.RawMessage, error) {
 	if ctx == nil {
 		return nil, errors.New("control context is nil")

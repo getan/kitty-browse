@@ -289,6 +289,46 @@ func TestInfoAndActionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestQuitRoundTripClosesTheHost(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortTempDir(t), "quit.sock")
+	asked := make(chan struct{})
+	server, err := Start(socket,
+		func(context.Context, bool) ([]byte, error) { return nil, nil },
+		WithQuit(func(context.Context) { close(asked) }),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Quit(context.Background(), socket); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	select {
+	case <-asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("quit callback never ran")
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket still exists after Close: %v", err)
+	}
+}
+
+func TestQuitIsAbsentUnlessEnabled(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortTempDir(t), "noquit.sock")
+	server, err := Start(socket, func(context.Context, bool) ([]byte, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	if err := Quit(context.Background(), socket); err == nil {
+		t.Fatal("quit succeeded on a host that never enabled it")
+	}
+}
+
 func TestActionReturnsJSONErrorEnvelope(t *testing.T) {
 	t.Parallel()
 	socket := filepath.Join(shortTempDir(t), "api.sock")
