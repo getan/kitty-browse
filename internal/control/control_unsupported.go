@@ -29,3 +29,8 @@ func Info(ctx context.Context, socketPath string) (json.RawMessage, error) {
 func Action(ctx context.Context, socketPath string, request json.RawMessage) (json.RawMessage, error) {
 	return nil, errUnixSocketsUnsupported
 }
+
+// Quit is unavailable on platforms without Unix-domain socket support.
+func Quit(ctx context.Context, socketPath string) error {
+	return errUnixSocketsUnsupported
+}

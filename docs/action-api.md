@@ -44,10 +44,19 @@ curl --silent --show-error --unix-socket "$SOCKET" http://unix/v1/info
 | `/v1/actions` | `POST` | JSON | 执行一个 typed action；body 上限 1 MiB |
 | `/v1/screenshot` | `GET` | `image/png` | 当前 active tab 的 viewport PNG；`?fullPage=true` 捕获整页 |
 | `/screenshot` | `GET` | `image/png` | 保留的兼容别名，行为同 `/v1/screenshot` |
+| `/v1/quit` | `POST` | JSON | 优雅关闭该浏览器；成功响应在 socket 关闭前写出 |
 
 路径必须精确匹配。截图 query 只允许恰好一个 `fullPage=true|false`；它没有 target 参数，需选择指定 tab 时应使用 typed `screenshot` action。截图 GET 的服务端时限为 15 秒；JSON API 外层服务端时限为 120 秒，JSON response 上限 16 MiB。
 
 不支持的方法返回 `405` 和 `Allow`。JSON action 的应用级失败通常仍返回 HTTP `200`，应检查 `ok`；畸形 JSON、过大 body 或外层超时等传输/入口错误使用非 2xx 状态及精简错误 envelope。
+
+`/v1/quit` 与 `/v1/actions` 共用同一套授权：socket 文件本身是唯一凭据（`0600`，父目录不可被他人写入），没有额外 token 或路径前缀。响应固定为
+
+```json
+{"apiVersion":"v1","id":null,"ok":true,"result":{"quitting":true}}
+```
+
+服务端先写出并 flush 该响应，再开始拆除（关闭 socket、结束 Chromium），所以调用方总能收到答复；之后对该路径的请求会失败。该路由只在宿主启用时存在（本仓库的 kite-browse pane 与 browserhost 都启用），未启用时返回 `404`，非 `POST` 返回 `405`。父进程（例如 golder）应当用它关闭自己启动的浏览器，而不是向 pane 注入按键或按可执行文件名猜测进程。
 
 ## 3. 发现与 target pinning
 
@@ -303,6 +312,7 @@ kitty-browse action -socket "$SOCKET" -- frame main
 | `back`, `forward`, `reload` | no | `{}` |
 | `set.viewport` | no | `width,height` 必填；实现范围均为 1..8192，且 target 必须先是 active tab |
 | `done` | no | `{}`；返回 `{"released":true}`，表示 action mode 完成，不关闭浏览器 |
+| `quit` | no | `{}`；返回 `{"quitting":true}`，随后宿主优雅关闭（等价于 `POST /v1/quit`） |
 
 ```json
 {"action":"tab.new","params":{"url":"https://example.com"}}
@@ -310,6 +320,7 @@ kitty-browse action -socket "$SOCKET" -- frame main
 {"action":"navigate","params":{"url":"https://example.com/account"},"target":{"browserId":"...","tabId":"...","targetId":"..."}}
 {"action":"set.viewport","params":{"width":1280,"height":720},"target":{"browserId":"...","tabId":"...","targetId":"..."}}
 {"action":"tab.close","params":{},"target":{"browserId":"...","tabId":"...","targetId":"..."}}
+{"action":"quit","params":{}}
 ```
 
 Host action 完成后 result 通常是更新后的 Info；应使用其中的新 tab 列表重新 pin。`meta` 表示该动作实际作用的 target：导航后 URL/title 会刷新，`tab.close` 保留被关闭 target 的原始 meta，`tab.new` 使用新建 target。动作在非 active tab 上执行并不自动切换 UI；只有显式 `tab.activate` 或 CLI `--follow` 会激活。

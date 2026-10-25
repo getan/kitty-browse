@@ -1,4 +1,4 @@
-package main
+package browsepane
 
 import (
 	"bytes"
@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -244,22 +243,6 @@ func readActionRequest(value string, in io.Reader) ([]byte, error) {
 	return raw, nil
 }
 
-func displayedTabID(info action.Info, value string) (string, error) {
-	index, err := strconv.Atoi(value)
-	if err != nil {
-		return value, nil // Opaque stable ID.
-	}
-	if index < 1 {
-		return "", clientError("target_not_found", "tab number must be a positive displayed index")
-	}
-	for _, tab := range info.Tabs {
-		if tab.Index == index {
-			return tab.ID, nil
-		}
-	}
-	return "", clientError("target_not_found", "displayed tab number is not available")
-}
-
 func targetOptional(name string) bool {
 	switch name {
 	case "info", "capabilities", "tab.new", "tab.list":
@@ -328,10 +311,6 @@ func writeJSON(out io.Writer, raw json.RawMessage) error {
 		return err
 	}
 	return nil
-}
-
-func clientError(code, message string) *action.Error {
-	return &action.Error{Code: code, Message: message}
 }
 
 func newActionRequestID() string {

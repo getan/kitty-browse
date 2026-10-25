@@ -1,4 +1,4 @@
-package main
+package browsepane
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func (w chromiumLogWriter) Write(p []byte) (int, error) {
 }
 
 func logBrowserDiagnostics(sess *engine.Session) {
-	if debugLog == nil {
+	if debugLog.Load() == nil {
 		return
 	}
 	if c := chromedp.FromContext(sess.Context()); c != nil && c.Browser != nil {

@@ -289,7 +289,7 @@ func ParseCommand(args []string) (Request, error) {
 		}
 		req.Action = "navigate"
 		p["url"] = rest[0]
-	case "back", "forward", "reload", "info", "capabilities", "done":
+	case "back", "forward", "reload", "info", "capabilities", "done", "quit":
 		if err := noExtra(0, cmd); err != nil {
 			return req, err
 		}

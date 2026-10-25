@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -105,6 +106,70 @@ func TestControlHandlerAPIRouting(t *testing.T) {
 		if rr.Code != http.StatusNotFound {
 			t.Errorf("disabled %s status = %d, want 404", path, rr.Code)
 		}
+	}
+}
+
+// The quit route follows the same security model as the action route: it exists
+// only when the host enabled it, it takes a POST, and it answers with the API
+// envelope before the host is allowed to stop.
+func TestQuitHandlerContract(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	quitting := false
+	h := controlHandler(
+		func(context.Context, bool) ([]byte, error) { return []byte("png"), nil },
+		serverConfig{quit: func(context.Context) {
+			mu.Lock()
+			quitting = true
+			mu.Unlock()
+		}},
+	)
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/quit", strings.NewReader(`{}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content type = %q", got)
+	}
+	var response quitEnvelope
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rr.Body.String())
+	}
+	if response.APIVersion != "v1" || !response.OK || !response.Result.Quitting {
+		t.Fatalf("response = %s", rr.Body.String())
+	}
+	mu.Lock()
+	called := quitting
+	mu.Unlock()
+	if !called {
+		t.Fatal("quit callback did not run")
+	}
+
+	for _, tt := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodGet, "/v1/quit", http.StatusMethodNotAllowed},
+		{http.MethodPut, "/v1/quit", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/v1/quit/", http.StatusNotFound},
+	} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(tt.method, tt.path, nil))
+		if rr.Code != tt.status {
+			t.Errorf("%s %s status = %d, want %d", tt.method, tt.path, rr.Code, tt.status)
+		}
+	}
+
+	// Without the option the route must not exist, even though the screenshot
+	// and API routes do.
+	disabled := controlHandler(func(context.Context, bool) ([]byte, error) { return nil, nil }, serverConfig{})
+	rr = httptest.NewRecorder()
+	disabled.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/quit", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("disabled /v1/quit status = %d, want 404", rr.Code)
 	}
 }
 

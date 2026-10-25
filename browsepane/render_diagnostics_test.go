@@ -1,4 +1,4 @@
-package main
+package browsepane
 
 import (
 	"bytes"
