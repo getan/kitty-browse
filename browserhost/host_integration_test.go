@@ -19,6 +19,7 @@ import (
 
 	"github.com/getan/kitty-browse/internal/action"
 	"github.com/getan/kitty-browse/internal/control"
+	"github.com/getan/kitty-browse/internal/testchromium"
 )
 
 const (
@@ -36,7 +37,7 @@ func hostChrome(t *testing.T) string {
 	}
 	for _, name := range []string{"chromium", "chrome-headless-shell", "chromium-browser", "google-chrome", "chrome"} {
 		if path, err := exec.LookPath(name); err == nil {
-			return path
+			return testchromium.Path(t, path)
 		}
 	}
 	t.Skip("no Chromium found; set KITTY_BROWSE_CHROME to run this integration test")

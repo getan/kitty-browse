@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/getan/kitty-browse/internal/testchromium"
 )
 
 // paneIntegrationChrome returns a Chromium executable, or skips. The env
@@ -22,7 +24,7 @@ func paneIntegrationChrome(t *testing.T) string {
 	}
 	for _, name := range []string{"chromium", "chrome-headless-shell", "chromium-browser", "google-chrome", "chrome"} {
 		if path, err := exec.LookPath(name); err == nil {
-			return path
+			return testchromium.Path(t, path)
 		}
 	}
 	t.Skip("no Chromium found; set KITTY_BROWSE_CHROME to run this integration test")
