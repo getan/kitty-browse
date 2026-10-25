@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"net/url"
 	"strings"
 	"sync"
@@ -31,6 +32,8 @@ type Session struct {
 	closeOnce    sync.Once
 	automationMu sync.Mutex
 	automation   *automationState
+	viewportMu   sync.Mutex
+	viewport     image.Point
 }
 
 // Open starts Chromium, navigates to target and waits for the document body.
@@ -218,7 +221,18 @@ func (s *Session) SetViewport(width, height int) error {
 	if width <= 0 || height <= 0 {
 		return nil
 	}
-	return chromedp.Do(s.ctx, chromedp.EmulateViewport(int64(width), int64(height), chromedp.EmulateScale(1)))
+	s.viewportMu.Lock()
+	defer s.viewportMu.Unlock()
+	if s.viewport == (image.Point{X: width, Y: height}) {
+		return nil
+	}
+	// Reapplying unchanged metrics invalidates Chromium's committed surface.
+	// A tab switch/close must not discard it just before a screenshot.
+	if err := chromedp.Do(s.ctx, chromedp.EmulateViewport(int64(width), int64(height), chromedp.EmulateScale(1))); err != nil {
+		return err
+	}
+	s.viewport = image.Point{X: width, Y: height}
+	return nil
 }
 
 // dispatchMouseEvent sends one raw Input.dispatchMouseEvent. chromedp's
