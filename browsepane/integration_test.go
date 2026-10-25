@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +44,15 @@ func privateProfiles(t *testing.T) int {
 	count := 0
 	for _, entry := range entries {
 		// Keep in step with internal/browser's privateProfilePrefix.
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "kitty-browse-private-") {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "kitty-browse-private-") {
+			continue
+		}
+		// `go test ./...` runs packages in parallel, and browserhost's tests
+		// start their own private Chromium at the same time. Every profile
+		// names its owning process, so only this test binary's profiles are
+		// evidence about the pane under test.
+		owner, err := os.ReadFile(filepath.Join(os.TempDir(), entry.Name(), "owner.pid"))
+		if err == nil && strings.TrimSpace(string(owner)) == strconv.Itoa(os.Getpid()) {
 			count++
 		}
 	}
