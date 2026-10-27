@@ -33,9 +33,18 @@ var ErrTabsClosed = errors.New("tabs are closed")
 
 // OpenTabs starts one shared Chromium browser and opens the initial user tab.
 func OpenTabs(parent context.Context, target string, timeout time.Duration) (*Tabs, error) {
+	return OpenTabsWithReady(parent, target, timeout, nil)
+}
+
+// OpenTabsWithReady marks the CDP startup boundary after the about:blank
+// anchor is connected, BEFORE navigating to any user page.
+func OpenTabsWithReady(parent context.Context, target string, timeout time.Duration, ready func()) (*Tabs, error) {
 	anchor, err := Open(parent, "about:blank", timeout)
 	if err != nil {
 		return nil, fmt.Errorf("open browser anchor: %w", err)
+	}
+	if ready != nil {
+		ready()
 	}
 
 	tabs := &Tabs{anchor: anchor, index: -1}

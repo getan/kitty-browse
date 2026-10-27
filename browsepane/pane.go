@@ -124,20 +124,36 @@ func runPane(ctx context.Context, opts Options) error {
 	browser.PruneStalePrivateProfiles(time.Now())
 
 	var browserOutput io.Writer
+	startup := &startupOnlyWriter{writer: opts.StartupOutput}
+	defer startup.stop()
+	phase := func(p string) {
+		if opts.StartupPhase != nil {
+			opts.StartupPhase(p)
+		}
+	}
+	if opts.StartupOutput != nil && !*private {
+		browserOutput = startup
+	}
 	if logger := debugLog.Load(); logger != nil {
-		browserOutput = chromiumLogWriter{logger: logger}
+		if browserOutput != nil {
+			browserOutput = io.MultiWriter(browserOutput, chromiumLogWriter{logger: logger})
+		} else {
+			browserOutput = chromiumLogWriter{logger: logger}
+		}
 		debugf("build %s fps=%g quality=%d maxViewport=%dx%d", opts.Version, *fps, *quality, *maxWidth, *maxHeight)
 	}
+	phase("starting_chromium")
 	browserCtx, closeAlloc, profile, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
 		ExecutablePath: *chrome, ProfileDir: *profileDir, DownloadDir: *downloadDir, Private: *private,
 		Stealth: *stealth, UserAgent: *userAgent, BrowserOutput: browserOutput,
+		RequireSandbox: opts.RequireChromiumSandbox,
 	})
 	if err != nil {
 		return err
 	}
 	defer closeAlloc()
 	debugf("starting browser executable=%q profile=%q private=%v stealth=%v", *chrome, profile.Dir, profile.Private, *stealth)
-	tabs, err := browser.OpenTabs(browserCtx, target, *load)
+	tabs, err := browser.OpenTabsWithReady(browserCtx, target, *load, func() { startup.stop(); phase("browser_connected") })
 	if err != nil {
 		return err
 	}
@@ -164,6 +180,7 @@ func runPane(ctx context.Context, opts Options) error {
 	}
 	_ = store.Record(sess.URL())
 
+	phase("initializing_terminal")
 	screen, err := term.Open(in, out)
 	if err != nil {
 		return err
@@ -176,11 +193,12 @@ func runPane(ctx context.Context, opts Options) error {
 	debugf("cell pixels=%+v", pixels)
 	geom := paneGeometry(rows, cols, pixels, *maxWidth, *maxHeight)
 	debugf("viewport geometry=%+v", geom)
+	phase("initializing_renderer")
 	if err := sess.SetViewport(geom.ContentWidthPx, geom.ContentHeightPx); err != nil {
 		debugf("set viewport error: %v", err)
 		screen.Header("kitty-browse: viewport: " + err.Error())
 		time.Sleep(2 * time.Second)
-		return nil
+		return fmt.Errorf("initialize viewport: %w", err)
 	}
 	debugf("viewport set")
 
@@ -403,6 +421,7 @@ func runPane(ctx context.Context, opts Options) error {
 		defer server.Close()
 		debugf("native action control socket=%s browser=%s", *socket, bridge.ID)
 	}
+	phase("ready")
 
 	handleHostAction := func(call host.Call) {
 		view := bridge.Load()

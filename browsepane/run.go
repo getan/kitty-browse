@@ -40,6 +40,15 @@ type Options struct {
 	Stdout io.Writer
 	// Stderr receives usage text and diagnostics. nil means os.Stderr.
 	Stderr io.Writer
+	// StartupOutput is an optional startup-only Chromium diagnostics sink.
+	// Embedders must bound/redact it. It is disabled once CDP has connected,
+	// before page interaction or terminal input starts; private mode ignores it.
+	StartupOutput io.Writer
+	// StartupPhase observes coarse startup milestones, never URLs or input.
+	StartupPhase func(string)
+	// RequireChromiumSandbox prevents the allocator's automatic --no-sandbox
+	// fallback for root. A controlled host must fail rather than disable it.
+	RequireChromiumSandbox bool
 	// Name is the program name usage output shows. Empty means "kitty-browse".
 	Name string
 	// Version is the one-line build description answered by -version. Empty

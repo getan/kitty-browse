@@ -45,7 +45,8 @@ type LaunchOptions struct {
 	Stealth        bool
 	// BrowserOutput receives Chromium's diagnostic output only when explicitly
 	// provided. Private mode ignores it, just like kitty-browse's debug log.
-	BrowserOutput io.Writer
+	BrowserOutput  io.Writer
+	RequireSandbox bool
 }
 
 // ProfileInfo describes the kitty-browse-owned data associated with a browser
@@ -100,6 +101,9 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 		allocatorOptions,
 		chromedp.Flag("disable-features", chromiumDisabledFeatures),
 	)
+	if opts.RequireSandbox {
+		allocatorOptions = append(allocatorOptions, chromedp.Flag("no-sandbox", false))
+	}
 	if opts.BrowserOutput != nil && !opts.Private {
 		allocatorOptions = append(allocatorOptions, chromedp.CombinedOutput(opts.BrowserOutput))
 	}

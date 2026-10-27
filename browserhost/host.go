@@ -62,6 +62,9 @@ type Options struct {
 	// BrowserOutput receives Chromium's diagnostic output. Private mode ignores
 	// it, like the pane's debug log.
 	BrowserOutput io.Writer
+	// Controlled embedders may require the allocator to retain Chromium's
+	// native sandbox even when running as root (otherwise startup must fail).
+	RequireSandbox bool
 }
 
 // DefaultOptions returns the pane's defaults, so a headless host started with
@@ -118,7 +121,8 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 	browserCtx, closeAlloc, _, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
 		ExecutablePath: opts.Chrome, ProfileDir: opts.ProfileDir, DownloadDir: opts.DownloadDir,
 		Private: opts.Private, Stealth: opts.Stealth, UserAgent: opts.UserAgent,
-		BrowserOutput: opts.BrowserOutput,
+		BrowserOutput:  opts.BrowserOutput,
+		RequireSandbox: opts.RequireSandbox,
 	})
 	if err != nil {
 		return nil, err
