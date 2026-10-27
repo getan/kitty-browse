@@ -30,6 +30,8 @@ const (
 	KeyResize
 	KeyMouse
 	KeyCellPixels
+	// KeyIgnored is terminal metadata that is not a key, such as an APC reply.
+	KeyIgnored
 )
 
 // Event is a key or terminal event.
@@ -108,6 +110,12 @@ func readEscape(r *bufio.Reader) (Event, error) {
 		return readCSI(r)
 	case 'O':
 		return readSS3(r)
+	case '_':
+		// A kitty graphics answer (or any APC) is terminal metadata, not a
+		// key. Consume it whole so a late probe reply is never typed into the
+		// page as the letters G, i, ... .
+		readAPC(r)
+		return Event{Kind: KeyIgnored}, nil
 	case 'f':
 		return Event{Kind: KeyAltF}, nil
 	default:
@@ -115,6 +123,24 @@ func readEscape(r *bufio.Reader) (Event, error) {
 			return Event{}, nil // Alt+letter; not a browser shortcut yet.
 		}
 		return Event{Kind: KeyEscape}, nil
+	}
+}
+
+// readAPC consumes an application program command up to ST (ESC \) or BEL.
+// The bound keeps a malformed or malicious stream from consuming forever.
+func readAPC(r *bufio.Reader) {
+	for i := 0; i < 1<<16; i++ {
+		b, err := r.ReadByte()
+		if err != nil || b == 0x07 {
+			return
+		}
+		if b != 0x1b {
+			continue
+		}
+		if next, err := r.Peek(1); err == nil && next[0] == '\\' {
+			_, _ = r.ReadByte()
+			return
+		}
 	}
 }
 

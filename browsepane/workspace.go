@@ -77,10 +77,10 @@ func mergeCellPixels(current, reply term.CellPixels, rows, cols int) term.CellPi
 	return current
 }
 
-func startTabStream(sess *browser.Session, g term.Geometry, fps float64, quality int) (*render.Stream, error) {
+func startTabStream(sess *browser.Session, g term.Geometry, fps float64, quality int, kittyGraphics bool) (*render.Stream, error) {
 	return render.Start(sess.Context(), render.Config{
 		FPS: fps, Quality: quality, Width: g.ContentWidthPx, Height: g.ContentHeightPx,
-		Cols: g.Cols, Rows: g.ContentRows,
+		Cols: g.Cols, Rows: g.ContentRows, KittyGraphics: kittyGraphics,
 	})
 }
 

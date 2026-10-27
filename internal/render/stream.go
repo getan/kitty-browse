@@ -39,6 +39,10 @@ type Config struct {
 	Cols    int
 	Rows    int
 	Encoder rasterm.Encoder
+	// KittyGraphics says the pane's terminal answered the kitty graphics
+	// probe. The kitty encoder is then used even when the environment does
+	// not name a kitty-capable terminal.
+	KittyGraphics bool
 }
 
 const (
@@ -116,7 +120,7 @@ func Start(ctx context.Context, cfg Config) (*Stream, error) {
 	}
 	var kitty *kittyEncoder
 	if cfg.Encoder == nil {
-		kitty = &kittyEncoder{Cols: cfg.Cols, Rows: cfg.Rows}
+		kitty = &kittyEncoder{Cols: cfg.Cols, Rows: cfg.Rows, force: cfg.KittyGraphics}
 		cfg.Encoder = rasterm.NewDefaultEncoder(
 			kitty,
 			rasterm.ITermEncoder{NoNewline: true},

@@ -20,6 +20,10 @@ type kittyEncoder struct {
 	rasterm.KittyEncoder
 	Cols int
 	Rows int
+	// force is set when the terminal itself answered the graphics query.
+	// rasterm's own answer is environment-only, so it cannot see a
+	// multiplexer that forwards kitty graphics under a plain TERM.
+	force bool
 
 	// Encode is called under Stream.encMu. Keep the large frame buffers here so a
 	// scrolling page does not allocate several megabytes for every frame.
@@ -28,6 +32,10 @@ type kittyEncoder struct {
 	zlibWriter *zlib.Writer
 	encoded    []byte
 	wire       []byte
+}
+
+func (e *kittyEncoder) Available() bool {
+	return e.force || e.KittyEncoder.Available()
 }
 
 func (e *kittyEncoder) Encode(w io.Writer, img image.Image) error {

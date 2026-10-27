@@ -187,6 +187,8 @@ func runPane(ctx context.Context, opts Options) error {
 	}
 	defer screen.Close()
 	debugf("screen open")
+	kittyGraphics := term.QueryKittyGraphics(in, out)
+	debugf("kitty graphics probe=%v", kittyGraphics)
 
 	rows, cols := screen.Size()
 	pixels := term.TerminalCellPixels(in, rows, cols)
@@ -202,7 +204,7 @@ func runPane(ctx context.Context, opts Options) error {
 	}
 	debugf("viewport set")
 
-	stream, err := startTabStream(sess, geom, *fps, *quality)
+	stream, err := startTabStream(sess, geom, *fps, *quality, kittyGraphics)
 	if err != nil {
 		debugf("render start error: %v", err)
 		screen.Header("kitty-browse: " + err.Error())
@@ -386,7 +388,7 @@ func runPane(ctx context.Context, opts Options) error {
 		// Stop before starting: the old StopScreencast would otherwise stop the
 		// new stream too when an action reselects the current target.
 		stream.Stop()
-		next, err := startTabStream(nextSession, geom, *fps, *quality)
+		next, err := startTabStream(nextSession, geom, *fps, *quality, kittyGraphics)
 		if err != nil {
 			return err
 		}
@@ -699,7 +701,7 @@ func runPane(ctx context.Context, opts Options) error {
 				// Restart only image transport, never the browser or document.
 				scroller.Stop()
 				stream.Stop()
-				next, err := startTabStream(sess, geom, *fps, *quality)
+				next, err := startTabStream(sess, geom, *fps, *quality, kittyGraphics)
 				if err != nil {
 					debugf("render recovery failed target=%s: %v", sess.TargetID(), err)
 					health.transportFailed()
