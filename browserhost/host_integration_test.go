@@ -219,6 +219,42 @@ func TestHostStopsOnCancellationAndEndpointIntegration(t *testing.T) {
 	})
 }
 
+// A startup-only deadline must not become the browser's lifetime. The caller
+// (golder) bounds Start with 45s, and this test reproduced the CI failure where
+// a screenshot taken after that deadline returned 500 "context deadline
+// exceeded": the allocator context used to be derived from the startup context.
+func TestHostOutlivesItsStartupDeadline(t *testing.T) {
+	chrome := hostChrome(t)
+	socket := hostTempSocket(t)
+	page := hostPage(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	h, err := Start(ctx, Options{
+		URL: page.URL, Socket: socket, Chrome: chrome, Private: true, Stealth: true,
+		LoadTimeout: hostRequestTimeout,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	<-ctx.Done() // the startup budget has expired
+	captureCtx, captureCancel := context.WithTimeout(context.Background(), hostRequestTimeout)
+	defer captureCancel()
+	data, err := control.Capture(captureCtx, socket, false)
+	if err != nil {
+		t.Fatalf("screenshot after the startup deadline: %v", err)
+	}
+	image, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("decode screenshot after the startup deadline: %v", err)
+	}
+	if got := image.Bounds(); got.Dx() != 1280 || got.Dy() != 800 {
+		t.Fatalf("screenshot bounds = %v, want 1280x800", got)
+	}
+}
+
 func TestHostRejectsAnUnusableChromium(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), hostRequestTimeout)
 	defer cancel()

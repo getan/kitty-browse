@@ -118,17 +118,48 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 	}
 	browser.PruneStalePrivateProfiles(time.Now())
 
-	browserCtx, closeAlloc, _, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
+	// The browser's lifetime is the host's, not the startup budget's. Derive it
+	// from a context that is only canceled by shutdown; ctx itself is already
+	// bounded by the caller (golder: 45s) and would otherwise kill every later
+	// CDP call, screenshots included, the moment startup finished.
+	lifeCtx, stopLife := context.WithCancel(context.WithoutCancel(ctx))
+	browserCtx, closeAlloc, _, err := browser.NewBrowserContext(lifeCtx, browser.LaunchOptions{
 		ExecutablePath: opts.Chrome, ProfileDir: opts.ProfileDir, DownloadDir: opts.DownloadDir,
 		Private: opts.Private, Stealth: opts.Stealth, UserAgent: opts.UserAgent,
 		BrowserOutput:  opts.BrowserOutput,
 		RequireSandbox: opts.RequireSandbox,
 	})
 	if err != nil {
+		stopLife()
 		return nil, err
 	}
-	tabs, err := browser.OpenTabs(browserCtx, url, opts.LoadTimeout)
+	// OpenTabs performs the actual Chromium launch. Keep the caller's startup
+	// budget around it, since the allocator context no longer carries it.
+	type openResult struct {
+		tabs *browser.Tabs
+		err  error
+	}
+	opened := make(chan openResult, 1)
+	go func() {
+		t, err := browser.OpenTabs(browserCtx, url, opts.LoadTimeout)
+		opened <- openResult{t, err}
+	}()
+	var tabs *browser.Tabs
+	select {
+	case result := <-opened:
+		tabs, err = result.tabs, result.err
+	case <-ctx.Done():
+		go func() {
+			if result := <-opened; result.tabs != nil {
+				result.tabs.Close()
+			}
+		}()
+		stopLife()
+		closeAlloc()
+		return nil, ctx.Err()
+	}
 	if err != nil {
+		stopLife()
 		closeAlloc()
 		return nil, err
 	}
@@ -139,7 +170,6 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 		titles: make(map[*browser.Session]string),
 		socket: opts.Socket,
 		quit:   host.NewQuit(),
-		cancel: closeAlloc,
 		done:   make(chan struct{}),
 
 		viewportWidth:  opts.ViewportWidth,
@@ -156,13 +186,22 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 			control.WithAPI(h.bridge.Information, h.bridge.Execute),
 			control.WithQuit(func(context.Context) { h.quit.Request() }))
 		if startErr != nil {
+			stopLife()
 			tabs.Close()
 			closeAlloc()
 			return nil, startErr
 		}
 		h.server = server
 	}
-	go h.serve(browserCtx, opts.LoadTimeout)
+	h.cancel = func() {
+		closeAlloc()
+		stopLife()
+	}
+	// serve still watches the caller's context so cancelling it stops the host,
+	// which is part of the public contract. Serving is only a select loop, so
+	// the now-expired startup deadline does not affect CDP work: the tab
+	// sessions are bound to lifeCtx, not ctx.
+	go h.serve(ctx, opts.LoadTimeout)
 	return h, nil
 }
 
