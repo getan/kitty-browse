@@ -750,7 +750,7 @@ func runPane(ctx context.Context, opts Options) error {
 			if !ok {
 				continue
 			}
-			if bridge.Active.Load() > 0 {
+			if bridge.InputBlocked.Load() > 0 {
 				// Keep native actions deterministic: while golder owns the target,
 				// human input does not race its ref/coordinate operation. Emergency
 				// quit remains available and cancellation tears down the action ctx.
@@ -832,6 +832,7 @@ func runPane(ctx context.Context, opts Options) error {
 								debugf("mouse down error: %v", err)
 								drawChrome(screen, model, store)
 							} else {
+								model.HandleMouse(cols, ev.Mouse)
 								dragging, dragCol, dragRow, dragX, dragY = true, ev.Mouse.Col, ev.Mouse.Row, x, y
 							}
 						}

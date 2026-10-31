@@ -420,11 +420,27 @@ func (s *Session) LayoutWidth(ctx context.Context) (int, error) {
 	return int(width + 0.5), nil
 }
 
+// focusedElementJS follows focus into open shadow roots and same-origin frames.
+// document.activeElement alone names their host, not the input inside it.
+const focusedElementJS = `(() => {
+  let el = document.activeElement;
+  for (let depth = 0; el && depth < 64; depth++) {
+    let next = el.shadowRoot && el.shadowRoot.activeElement;
+    if (!next && (el.tagName === "IFRAME" || el.tagName === "FRAME")) {
+      try { next = el.contentDocument && el.contentDocument.activeElement; }
+      catch (_) { /* Cross-origin frames are not readable from this document. */ }
+    }
+    if (!next || next === el) break;
+    el = next;
+  }
+  return el;
+})()`
+
 // editableFocusJS reports whether the page's active element accepts typed text.
 // Buttons, links and select elements do not, so browser shortcuts stay active
 // while they are focused.
 const editableFocusJS = `(() => {
-  const el = document.activeElement;
+  const el = ` + focusedElementJS + `;
   if (!el) return "";
   if (el.isContentEditable) return "contenteditable";
   const tag = el.tagName;
@@ -450,7 +466,7 @@ func (s *Session) EditableFocus(ctx context.Context) (bool, error) {
 // BlurFocused clears page focus so browser shortcuts take over again.
 func (s *Session) BlurFocused(ctx context.Context) error {
 	_, err := chromedp.Run(ctx, chromedp.Evaluate[any](`(() => {
-		const el = document.activeElement;
+		const el = `+focusedElementJS+`;
 		if (el && el.blur) el.blur();
 	})()`))
 	if err != nil {

@@ -42,8 +42,11 @@ type Bridge struct {
 	view   atomic.Pointer[Snapshot]
 	Calls  chan Call
 	Active atomic.Int64
-	limit  chan struct{}
-	gates  sync.Map // target id (or browser scope) -> chan struct{}
+	// InputBlocked counts mutating actions only. Read-only observation may run
+	// while a person types; it must not cause the pane to discard their keys.
+	InputBlocked atomic.Int64
+	limit        chan struct{}
+	gates        sync.Map // target id (or browser scope) -> chan struct{}
 }
 
 // NewBridge creates a bridge for one browser identity.
@@ -162,6 +165,17 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 	}
 	b.Active.Add(1)
 	defer b.Active.Add(-1)
+	blocksInput := true
+	for _, capability := range view.Info.Capabilities {
+		if capability.Name == req.Action {
+			blocksInput = !capability.ReadOnly
+			break
+		}
+	}
+	if blocksInput {
+		b.InputBlocked.Add(1)
+		defer b.InputBlocked.Add(-1)
+	}
 	if HostManagedAction(req.Action) {
 		call := Call{Ctx: op, Req: req, Reply: make(chan action.Response, 1)}
 		select {
