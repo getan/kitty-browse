@@ -718,7 +718,7 @@ func runPane(ctx context.Context, opts Options) error {
 			if health.waitingTooLong(time.Now()) && renderStatus.text != "No first page image yet; checking renderer..." {
 				showRenderFailure()
 			}
-			if last := stream.LastFrame(); probe.result == nil && shouldCaptureStill(time.Now(), last, lastStill, lastStillFor, haveStill) {
+			if last := stream.LastFrame(); probe.result == nil && shouldCaptureStill(time.Now(), last, lastStill, lastStillFor, haveStill, lastImage != nil) {
 				// Also seed an initial frame when screencast produces no event.
 				// The bounded PNG request runs off the UI goroutine: the first-frame
 				// warning, tab controls and native actions remain responsive.
@@ -1141,8 +1141,15 @@ func handleText(screen *term.Screen, stream *render.Stream, model *ui.Model, sto
 }
 
 // Upgrade an idle page to PNG once per content change, not once every two
-// seconds forever. When screencast is silent from startup, keep the fallback.
-func shouldCaptureStill(now, last, attempt, capturedFor time.Time, haveStill bool) bool {
+// seconds forever. Before any image has reached the terminal, start the first
+// PNG immediately: Chromium may report screencast activity without publishing
+// a usable frame, and waiting for the normal idle throttle leaves a black pane
+// that a second navigation appears to fix. A failed first probe still sets
+// attempt and therefore returns to the bounded two-second retry cadence.
+func shouldCaptureStill(now, last, attempt, capturedFor time.Time, haveStill, haveImage bool) bool {
+	if !haveImage && attempt.IsZero() {
+		return true
+	}
 	return (last.IsZero() || now.Sub(last) > 400*time.Millisecond) &&
 		now.Sub(attempt) > 2*time.Second &&
 		(last.IsZero() || !haveStill || !last.Equal(capturedFor))
