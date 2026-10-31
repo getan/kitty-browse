@@ -186,6 +186,45 @@ func TestInvalidUserAgentDoesNotTouchProfile(t *testing.T) {
 	}
 }
 
+func TestNormalizeProxyServer(t *testing.T) {
+	valid := map[string]string{
+		"":                            "",
+		"http://127.0.0.1:7897":       "http://127.0.0.1:7897",
+		"https://proxy.example:8443/": "https://proxy.example:8443",
+		"socks5://127.0.0.1:1080":     "socks5://127.0.0.1:1080",
+		"socks5h://127.0.0.1:7897":    "socks5://127.0.0.1:7897",
+		"  http://127.0.0.1:7897  ":   "http://127.0.0.1:7897",
+	}
+	for raw, want := range valid {
+		got, err := normalizeProxyServer(raw)
+		if err != nil || got != want {
+			t.Errorf("normalizeProxyServer(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{
+		"127.0.0.1:7897", "ftp://127.0.0.1:21", "http://user:pass@127.0.0.1:7897",
+		"http://127.0.0.1:7897/path", "http://127.0.0.1:7897?x=1",
+	} {
+		if got, err := normalizeProxyServer(raw); err == nil {
+			t.Errorf("normalizeProxyServer(%q) = %q, want refusal", raw, got)
+		}
+	}
+}
+
+func TestInvalidProxyDoesNotTouchProfile(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "must-not-exist")
+	_, _, _, err := NewBrowserContext(context.Background(), LaunchOptions{
+		ProfileDir:  profile,
+		ProxyServer: "http://user:pass@127.0.0.1:7897",
+	})
+	if err == nil {
+		t.Fatal("browser accepted proxy credentials in argv")
+	}
+	if _, statErr := os.Stat(profile); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid proxy touched profile: %v", statErr)
+	}
+}
+
 func TestProfilePathMustBeDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "profile-file")
 	if err := os.WriteFile(path, []byte("do not replace"), 0o600); err != nil {

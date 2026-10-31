@@ -88,7 +88,7 @@ func TestRunDoesNotTouchFlagCommandLine(t *testing.T) {
 		return entries + flag.NFlag()
 	}
 	before := count()
-	for _, arg := range []string{"fps", "control-socket", "socket", "profile-dir", "private", "chrome"} {
+	for _, arg := range []string{"fps", "control-socket", "socket", "profile-dir", "private", "chrome", "proxy-server"} {
 		if err := Run(context.Background(), Options{Args: []string{"-h"}, Stdout: io.Discard, Stderr: io.Discard}); err != nil {
 			t.Fatal(err)
 		}

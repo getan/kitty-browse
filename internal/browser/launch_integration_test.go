@@ -160,6 +160,32 @@ func TestLaunchIdentityPipelineIntegration(t *testing.T) {
 	assertLaunchIdentity(t, custom.Active(), launchRequestUA(t, &mu, requests, "/custom"), customUA)
 }
 
+// Opt in with an actual proxy and external target when validating a user's
+// network route, for example:
+//
+//	KITTY_BROWSE_CHROME=/path/to/Chromium \
+//	KITTY_BROWSE_TEST_PROXY=http://127.0.0.1:7897 \
+//	KITTY_BROWSE_TEST_PROXY_TARGET=https://www.v2ex.com/ \
+//	go test ./internal/browser -run TestExplicitProxyIntegration -v
+func TestExplicitProxyIntegration(t *testing.T) {
+	proxy := strings.TrimSpace(os.Getenv("KITTY_BROWSE_TEST_PROXY"))
+	target := strings.TrimSpace(os.Getenv("KITTY_BROWSE_TEST_PROXY_TARGET"))
+	if proxy == "" || target == "" {
+		t.Skip("set KITTY_BROWSE_TEST_PROXY and KITTY_BROWSE_TEST_PROXY_TARGET")
+	}
+	tabs, _ := launchIntegrationTabs(t, LaunchOptions{
+		ExecutablePath: launchIntegrationChrome(t),
+		Private:        true,
+		ProxyServer:    proxy,
+	}, target)
+	if err := tabs.Active().LoadError(); err != nil {
+		t.Fatalf("proxied page load: %v", err)
+	}
+	if got := tabs.Active().URL(); got == "" || strings.HasPrefix(got, "chrome-error:") {
+		t.Fatalf("proxied page URL = %q", got)
+	}
+}
+
 func launchIntegrationChrome(t *testing.T) string {
 	t.Helper()
 	chrome := os.Getenv("KITTY_BROWSE_CHROME")

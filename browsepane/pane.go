@@ -72,6 +72,7 @@ func runPane(ctx context.Context, opts Options) error {
 		load        = flags.Duration("load-timeout", 30*time.Second, "page load timeout")
 		measure     = flags.Bool("measure-cells", true, "query cell pixel size asynchronously (disable with -measure-cells=false)")
 		chrome      = flags.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
+		proxyServer = flags.String("proxy-server", "", "explicit Chromium HTTP(S) or SOCKS5 proxy; ambient proxy environment is ignored")
 		socket      = flags.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional owner-only Unix socket for native browser actions and screenshots")
 		socketAlias = flags.String("socket", "", "alias for -control-socket")
 		shotDir     = flags.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
@@ -144,7 +145,7 @@ func runPane(ctx context.Context, opts Options) error {
 	}
 	phase("starting_chromium")
 	browserCtx, closeAlloc, profile, err := browser.NewBrowserContext(ctx, browser.LaunchOptions{
-		ExecutablePath: *chrome, ProfileDir: *profileDir, DownloadDir: *downloadDir, Private: *private,
+		ExecutablePath: *chrome, ProfileDir: *profileDir, DownloadDir: *downloadDir, ProxyServer: *proxyServer, Private: *private,
 		Stealth: *stealth, UserAgent: *userAgent, BrowserOutput: browserOutput,
 		RequireSandbox: opts.RequireChromiumSandbox,
 	})

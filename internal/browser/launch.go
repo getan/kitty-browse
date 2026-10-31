@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,9 +41,12 @@ type LaunchOptions struct {
 	ExecutablePath string
 	ProfileDir     string
 	DownloadDir    string
-	UserAgent      string
-	Private        bool
-	Stealth        bool
+	// ProxyServer is an explicit Chromium proxy. Ambient HTTP_PROXY variables
+	// are deliberately not read; callers must opt in with a reviewed value.
+	ProxyServer string
+	UserAgent   string
+	Private     bool
+	Stealth     bool
 	// BrowserOutput receives Chromium's diagnostic output only when explicitly
 	// provided. Private mode ignores it, just like kitty-browse's debug log.
 	BrowserOutput  io.Writer
@@ -91,6 +95,10 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	if err := validateUserAgent(opts.UserAgent); err != nil {
 		return nil, nil, empty, err
 	}
+	proxyServer, err := normalizeProxyServer(opts.ProxyServer)
+	if err != nil {
+		return nil, nil, empty, err
+	}
 
 	// Clone the defaults rather than appending to their backing array. This
 	// prevents one launch's options from mutating chromedp's package defaults or
@@ -109,6 +117,9 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	}
 	if opts.ExecutablePath != "" {
 		allocatorOptions = append(allocatorOptions, chromedp.ExecPath(opts.ExecutablePath))
+	}
+	if proxyServer != "" {
+		allocatorOptions = append(allocatorOptions, chromedp.ProxyServer(proxyServer))
 	}
 	if opts.Stealth {
 		allocatorOptions = append(allocatorOptions,
@@ -189,6 +200,37 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	ctx = withIdentityOptions(ctx, identity)
 	ctx = withDownloadConfig(ctx, newDownloadConfig(downloadDir))
 	return ctx, cancel, info, nil
+}
+
+// normalizeProxyServer validates the explicit command-line proxy before any
+// profile is touched. Chromium accepts HTTP(S) and SOCKS5 proxy servers; curl's
+// socks5h spelling has the same remote-DNS semantics in Chromium and is
+// normalized to socks5. Credentials stay out of argv and process listings.
+func normalizeProxyServer(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("proxy server must use http://, https://, socks5:// or socks5h:// with a host")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("proxy server credentials are not accepted in browser argv")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("proxy server URL must not contain a path")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5":
+		u.Scheme = strings.ToLower(u.Scheme)
+	case "socks5h":
+		u.Scheme = "socks5"
+	default:
+		return "", fmt.Errorf("proxy server must use http://, https://, socks5:// or socks5h:// with a host")
+	}
+	u.Path, u.RawPath = "", ""
+	return u.String(), nil
 }
 
 // prepareDownloadDir creates an owner-only download directory. Private
