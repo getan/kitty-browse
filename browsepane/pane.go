@@ -64,23 +64,24 @@ func runPane(ctx context.Context, opts Options) error {
 	flags := flag.NewFlagSet(opts.Name, flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	var (
-		fps         = flags.Float64("fps", 24, "maximum frames per second (0.1..240)")
-		scrollLines = flags.Float64("scroll-lines", 2, "terminal cell heights per wheel step (0.1..100)")
-		quality     = flags.Int("quality", 85, "JPEG quality, 0-100")
-		maxWidth    = flags.Int("width", 0, "maximum frame width in pixels; 0 sizes to the pane")
-		maxHeight   = flags.Int("height", 0, "maximum frame height in pixels; 0 sizes to the pane")
-		load        = flags.Duration("load-timeout", 30*time.Second, "page load timeout")
-		measure     = flags.Bool("measure-cells", true, "query cell pixel size asynchronously (disable with -measure-cells=false)")
-		chrome      = flags.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
-		proxyServer = flags.String("proxy-server", "", "explicit Chromium HTTP(S) or SOCKS5 proxy; ambient proxy environment is ignored")
-		socket      = flags.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional owner-only Unix socket for native browser actions and screenshots")
-		socketAlias = flags.String("socket", "", "alias for -control-socket")
-		shotDir     = flags.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
-		profileDir  = flags.String("profile-dir", "", "dedicated persistent Chromium profile directory (default: user config directory)")
-		downloadDir = flags.String("download-dir", "", "download directory (default: profile Downloads, or temporary in private mode)")
-		private     = flags.Bool("private", false, "use a temporary profile and in-memory history; do not retain browsing data")
-		stealth     = flags.Bool("stealth", true, "remove Chromium's headless UA token and automation markers (default on; -stealth=false restores the native headless identity)")
-		userAgent   = flags.String("user-agent", "", "optional explicit User-Agent; default: the running Chromium desktop UA with the headless token removed")
+		fps          = flags.Float64("fps", 24, "maximum frames per second (0.1..240)")
+		scrollLines  = flags.Float64("scroll-lines", 2, "terminal cell heights per wheel step (0.1..100)")
+		quality      = flags.Int("quality", 85, "JPEG quality, 0-100")
+		maxWidth     = flags.Int("width", 0, "maximum frame width in pixels; 0 sizes to the pane")
+		maxHeight    = flags.Int("height", 0, "maximum frame height in pixels; 0 sizes to the pane")
+		load         = flags.Duration("load-timeout", 30*time.Second, "page load timeout")
+		measure      = flags.Bool("measure-cells", true, "query cell pixel size asynchronously (disable with -measure-cells=false)")
+		chrome       = flags.String("chrome", os.Getenv("KITTY_BROWSE_CHROME"), "Chromium executable path (or KITTY_BROWSE_CHROME)")
+		proxyServer  = flags.String("proxy-server", "", "explicit Chromium HTTP(S) or SOCKS5 proxy; ambient proxy environment is ignored")
+		socket       = flags.String("control-socket", os.Getenv("KITTY_BROWSE_SOCKET"), "optional owner-only Unix socket for native browser actions and screenshots")
+		socketAlias  = flags.String("socket", "", "alias for -control-socket")
+		shotDir      = flags.String("screenshot-dir", ".local/screenshots", "directory for s/S screenshot hotkeys")
+		profileDir   = flags.String("profile-dir", "", "dedicated persistent Chromium profile directory (default: user config directory)")
+		loginProfile = flags.String("login-profile", "", "host-assigned saved-login profile identity (no cookies or paths)")
+		downloadDir  = flags.String("download-dir", "", "download directory (default: profile Downloads, or temporary in private mode)")
+		private      = flags.Bool("private", false, "use a temporary profile and in-memory history; do not retain browsing data")
+		stealth      = flags.Bool("stealth", true, "remove Chromium's headless UA token and automation markers (default on; -stealth=false restores the native headless identity)")
+		userAgent    = flags.String("user-agent", "", "optional explicit User-Agent; default: the running Chromium desktop UA with the headless token removed")
 	)
 	flags.Usage = func() {
 		fmt.Fprintf(flags.Output(), "usage: %s [flags] [url]\n", opts.Name)
@@ -226,6 +227,7 @@ func runPane(ctx context.Context, opts Options) error {
 	cacheTabTitle(titles, sess)
 	syncTabChrome(model, tabs, titles)
 	bridge := host.NewBridge("browser-" + newActionRequestID())
+	bridge.LoginProfile = *loginProfile
 	bridge.Update(tabs, titles)
 	refreshLists(model, store)
 	updatePaneTitle(pane, sess)
@@ -610,6 +612,7 @@ func runPane(ctx context.Context, opts Options) error {
 			if bridge.Active.Load() > 0 {
 				continue
 			}
+			bridge.ObserveIntervention(ctx, sess)
 			if resizePending {
 				resizePending = false
 				_ = applyViewport()
@@ -669,7 +672,8 @@ func runPane(ctx context.Context, opts Options) error {
 			}
 			bridge.Update(tabs, titles)
 		case <-tick.C:
-			if model.AgentActive != (bridge.Active.Load() > 0) {
+			if state := bridge.Interaction(); state != model.Interaction {
+				model.Interaction = state
 				model.AgentActive = bridge.Active.Load() > 0
 				drawChrome(screen, model, store)
 			}
@@ -750,7 +754,16 @@ func runPane(ctx context.Context, opts Options) error {
 			if !ok {
 				continue
 			}
+			if ev.Kind == term.KeyCtrlG {
+				bridge.Resume()
+				model.Interaction = bridge.Interaction()
+				drawChrome(screen, model, store)
+				continue
+			}
 			if bridge.InputBlocked.Load() > 0 {
+				bridge.NoteInputConflict()
+				model.Interaction = bridge.Interaction()
+				drawChrome(screen, model, store)
 				// Keep native actions deterministic: while golder owns the target,
 				// human input does not race its ref/coordinate operation. Emergency
 				// quit remains available and cancellation tears down the action ctx.

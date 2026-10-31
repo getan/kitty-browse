@@ -27,6 +27,7 @@ const (
 	KeyCtrlR
 	KeyCtrlC
 	KeyCtrlQ
+	KeyCtrlG
 	KeyResize
 	KeyMouse
 	KeyCellPixels
@@ -69,6 +70,8 @@ func ReadEvent(r *bufio.Reader) (Event, error) {
 		return Event{Kind: KeyCtrlC}, nil
 	case 0x11:
 		return Event{Kind: KeyCtrlQ}, nil
+	case 0x07:
+		return Event{Kind: KeyCtrlG}, nil
 	case 0x0c:
 		return Event{Kind: KeyCtrlL}, nil
 	case 0x12:

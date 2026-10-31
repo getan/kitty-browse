@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/getan/kitty-browse/internal/browser"
+	"github.com/getan/kitty-browse/internal/host"
 	"github.com/getan/kitty-browse/internal/term"
 	"github.com/getan/kitty-browse/internal/textutil"
 )
@@ -65,6 +66,7 @@ type Model struct {
 	CanGoForward bool
 	Private      bool
 	AgentActive  bool
+	Interaction  host.InteractionState
 
 	// replaceAddress records the selection made by clicking the address field.
 	// The next typed character replaces the selection rather than appending.
@@ -136,8 +138,23 @@ func (m *Model) Footer(bookmarked bool) string {
 		return ""
 	}
 	line := m.footer(bookmarked)
-	if m.AgentActive {
+	state := m.Interaction
+	switch {
+	case state.Busy && !state.ReadOnly:
+		line = "Agent operating: " + state.Action + " · please wait"
+		if state.InputConflict {
+			line += " · input ignored; try after completion"
+		}
+	case state.Paused:
+		line = "Automation paused: " + state.Reason + " · manual input ready · Ctrl+G resume"
+	case state.Busy:
+		line = "Agent observing: " + state.Action + " · manual input ready"
+	case state.Completed:
+		line = "Agent finished: " + state.Action + " · manual input ready"
+	case m.AgentActive:
 		line = "AGENT · " + line
+	default:
+		line = "Manual input ready · " + line
 	}
 	if m.Private {
 		return "PRIVATE · " + line
