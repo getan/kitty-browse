@@ -33,6 +33,7 @@ type TabInfo struct {
 type Info struct {
 	APIVersion   string       `json:"apiVersion"`
 	BrowserID    string       `json:"browserId"`
+	LoginProfile string       `json:"loginProfile,omitempty"`
 	ActiveTabID  string       `json:"activeTabId"`
 	Backend      string       `json:"backend"`
 	Tabs         []TabInfo    `json:"tabs"`
@@ -345,5 +346,8 @@ func Capabilities() []Capability {
 		cap("tab.close", "Host-managed tab closure.", false, map[string]any{"tabId": str}), cap("tab.activate", "Host-managed tab activation.", false, map[string]any{"tabId": str}),
 		cap("info", "Host-managed API information.", true, empty), cap("capabilities", "Host-managed capability listing.", true, empty), cap("done", "Host-managed action mode completion.", false, empty),
 		cap("quit", "Host-managed graceful browser shutdown; the reply is sent before the control socket closes.", false, empty),
+		cap("interaction.status", "Read agent activity and automatic-action pause state.", true, empty),
+		cap("interaction.pause", "Pause future automatic mutations; manual interaction and observation remain available.", false, empty),
+		cap("interaction.resume", "Explicit operator resume; never replays previous actions.", false, empty),
 	}
 }

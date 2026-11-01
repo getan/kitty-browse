@@ -32,9 +32,16 @@ func (m *Model) Chrome(cols int) []string {
 }
 
 // HandleMouse maps a press to the same parts used by Chrome. Mouse positions
-// are one-based SGR terminal coordinates.
+// are one-based SGR terminal coordinates. A page press releases address editing
+// so the newly focused page input, not the toolbar, receives the next key.
 func (m *Model) HandleMouse(cols int, mouse term.MouseEvent) Action {
-	if m == nil || cols <= 0 || !mouse.Press || mouse.Motion || mouse.Wheel != 0 || mouse.Button != 0 || mouse.Row < 1 || mouse.Row > ChromeRows || mouse.Col < 1 || mouse.Col > cols {
+	if m == nil || cols <= 0 || !mouse.Press || mouse.Motion || mouse.Wheel != 0 || mouse.WheelX != 0 || mouse.Button != 0 || mouse.Row < 1 || mouse.Col < 1 || mouse.Col > cols {
+		return Action{}
+	}
+	if mouse.Row > ChromeRows {
+		if m.Editing {
+			m.Handle(term.Event{Kind: term.KeyEscape})
+		}
 		return Action{}
 	}
 	parts := m.chromeLayout(cols)[mouse.Row-1]

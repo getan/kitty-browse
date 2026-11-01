@@ -38,12 +38,17 @@ type Call struct {
 // outside the host loop; tab/navigation/viewport changes are posted back to that
 // loop, which remains the sole owner of models and screencast selection.
 type Bridge struct {
-	ID     string
-	view   atomic.Pointer[Snapshot]
-	Calls  chan Call
-	Active atomic.Int64
-	limit  chan struct{}
-	gates  sync.Map // target id (or browser scope) -> chan struct{}
+	ID           string
+	LoginProfile string // immutable, assigned by the trusted launcher
+	view         atomic.Pointer[Snapshot]
+	Calls        chan Call
+	Active       atomic.Int64
+	// InputBlocked counts mutating actions only. Read-only observation may run
+	// while a person types; it must not cause the pane to discard their keys.
+	InputBlocked atomic.Int64
+	limit        chan struct{}
+	gates        sync.Map // target id (or browser scope) -> chan struct{}
+	interaction  interactionState
 }
 
 // NewBridge creates a bridge for one browser identity.
@@ -58,6 +63,7 @@ func (b *Bridge) Load() *Snapshot { return b.view.Load() }
 func (b *Bridge) Update(tabs *browser.Tabs, titles map[*browser.Session]string) {
 	view := &Snapshot{
 		Info: action.Info{APIVersion: action.APIVersion, BrowserID: b.ID, Backend: action.Backend,
+			LoginProfile: b.LoginProfile,
 			Capabilities: action.Capabilities(), Tabs: []action.TabInfo{}},
 		Sessions: make(map[string]*browser.Session),
 	}
@@ -144,6 +150,17 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 		// Even a raw JSON request without selectors is pinned at acceptance time.
 		req.Target = action.Target{BrowserID: view.Info.BrowserID, TabID: target.ID, TargetID: target.TargetID}
 	}
+	if req.Action == "interaction.status" || req.Action == "interaction.pause" || req.Action == "interaction.resume" {
+		switch req.Action {
+		case "interaction.pause":
+			b.Pause("manual")
+		case "interaction.resume":
+			b.Resume()
+		}
+		result, _ := json.Marshal(b.Interaction())
+		return respond(target, result, nil)
+	}
+	epoch := b.pauseEpoch() // queued pre-pause mutations must not run after resume
 	releaseBrowser := func() {}
 	if HostManagedAction(req.Action) {
 		var acquireErr error
@@ -162,6 +179,25 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 	}
 	b.Active.Add(1)
 	defer b.Active.Add(-1)
+	blocksInput := true
+	for _, capability := range view.Info.Capabilities {
+		if capability.Name == req.Action {
+			blocksInput = !capability.ReadOnly
+			break
+		}
+	}
+	if blocksInput && req.Action != "quit" {
+		b.ObserveIntervention(op, view.Sessions[target.ID])
+	}
+	finish, err := b.beginInteractionAt(req.Action, blocksInput, epoch)
+	if err != nil {
+		return respond(target, nil, err)
+	}
+	defer finish()
+	if blocksInput {
+		b.InputBlocked.Add(1)
+		defer b.InputBlocked.Add(-1)
+	}
 	if HostManagedAction(req.Action) {
 		call := Call{Ctx: op, Req: req, Reply: make(chan action.Response, 1)}
 		select {
@@ -171,6 +207,9 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 		}
 		select {
 		case response := <-call.Reply:
+			if blocksInput && req.Action != "quit" {
+				b.ObserveIntervention(op, view.Sessions[target.ID])
+			}
 			return json.Marshal(response)
 		case <-op.Done():
 			return respond(target, nil, op.Err())
@@ -181,6 +220,9 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 		return respond(target, nil, ClientError("target_not_found", "selected tab is closed"))
 	}
 	result, err := action.Execute(op, req, sess)
+	if blocksInput {
+		b.ObserveIntervention(op, sess)
+	}
 	return respond(target, result, err)
 }
 
@@ -200,7 +242,7 @@ func (b *Bridge) acquire(ctx context.Context, key string) (func(), error) {
 // than one tab.
 func BrowserScopedAction(name string) bool {
 	switch name {
-	case "info", "capabilities", "done", "quit", "tab.list", "tab.new":
+	case "info", "capabilities", "done", "quit", "tab.list", "tab.new", "interaction.status", "interaction.pause", "interaction.resume":
 		return true
 	}
 	return false

@@ -39,6 +39,9 @@ type Options struct {
 	// ProfileDir is a dedicated persistent profile. Empty uses kitty-browse's
 	// own configuration directory.
 	ProfileDir string
+	// LoginProfile is an optional host-assigned identity for saved-login access
+	// checks. It contains no cookie values or filesystem path.
+	LoginProfile string
 	// DownloadDir is where downloads are written. Empty uses the profile's
 	// Downloads directory, or a temporary directory in private mode.
 	DownloadDir string
@@ -175,6 +178,7 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 		viewportWidth:  opts.ViewportWidth,
 		viewportHeight: opts.ViewportHeight,
 	}
+	h.bridge.LoginProfile = opts.LoginProfile
 	for _, sess := range tabs.Sessions() {
 		host.CacheTitle(h.titles, sess)
 	}
