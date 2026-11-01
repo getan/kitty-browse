@@ -2,6 +2,8 @@ module github.com/getan/kitty-browse
 
 go 1.25.0
 
+toolchain go1.27.3
+
 require (
 	github.com/chromedp/cdproto v0.157.8
 	github.com/chromedp/chromedp v0.20.0
