@@ -51,6 +51,16 @@ digest.
 
 Chromium is not installed by the script; see Requirements.
 
+### Profile disk use
+
+Private mode keeps its implicit downloads inside an owner-marked temporary
+profile, removes the whole tree on normal close, and prunes ownerless crash
+leftovers older than one hour on the next launch.
+Persistent profiles keep cookies, Local Storage, IndexedDB, history and downloads,
+but browser-generated component, HTTP/code/GPU and shader caches are removed when
+the profile is reopened. Chromium component auto-updates are disabled so optional
+speech packs and on-device optimization models cannot silently consume gigabytes.
+
 ## Requirements
 
 - Go 1.25+

@@ -102,6 +102,13 @@ func TestProfileLockRejectsConcurrentUseAndReopensAfterCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first NewBrowserContext: %v", err)
 	}
+	activeCache := filepath.Join(profile, "component_crx_cache", "active")
+	if err := os.MkdirAll(filepath.Dir(activeCache), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeCache, []byte("owned by the first browser"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, cancel, _, err := NewBrowserContext(context.Background(), LaunchOptions{ProfileDir: profile}); err == nil {
 		cancel()
 		cancelFirst()
@@ -109,6 +116,10 @@ func TestProfileLockRejectsConcurrentUseAndReopensAfterCancel(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "already in use") {
 		cancelFirst()
 		t.Fatalf("lock error = %q, want clear already-in-use error", err)
+	}
+	if raw, err := os.ReadFile(activeCache); err != nil || string(raw) != "owned by the first browser" {
+		cancelFirst()
+		t.Fatalf("failed concurrent open pruned active cache: %q %v", raw, err)
 	}
 
 	cancelFirst()
@@ -161,6 +172,83 @@ func TestPrivateProfileConflictDoesNotTouchPath(t *testing.T) {
 	}
 	if _, statErr := os.Stat(profile); !os.IsNotExist(statErr) {
 		t.Fatalf("conflicting private launch touched profile: %v", statErr)
+	}
+}
+
+func TestProfileHygieneDisablesComponentUpdates(t *testing.T) {
+	for _, flag := range profileHygieneFlags {
+		if flag.name == "disable-component-update" && flag.value == true {
+			return
+		}
+	}
+	t.Fatal("Chromium component updates can repopulate multi-gigabyte profile models")
+}
+
+func TestPruneRegenerableProfileCachesKeepsLoginState(t *testing.T) {
+	profile := t.TempDir()
+	cacheFiles := []string{
+		filepath.Join(profile, "component_crx_cache", "component"),
+		filepath.Join(profile, "SODALanguagePacks", "speech"),
+		filepath.Join(profile, "OptGuideOnDeviceModel", "weights.bin"),
+		filepath.Join(profile, "Default", "Cache", "page"),
+		filepath.Join(profile, "Default", "Code Cache", "code"),
+	}
+	for _, path := range cacheFiles {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("regenerable"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := []string{
+		filepath.Join(profile, "Default", "Cookies"),
+		filepath.Join(profile, "Default", "Local Storage", "leveldb", "state"),
+		filepath.Join(profile, "Default", "IndexedDB", "origin", "data"),
+	}
+	for _, path := range kept {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("login-state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := pruneRegenerableProfileCaches(profile); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range cacheFiles {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("cache survived %s: %v", path, err)
+		}
+	}
+	for _, path := range kept {
+		if raw, err := os.ReadFile(path); err != nil || string(raw) != "login-state" {
+			t.Errorf("login state changed %s: %q %v", path, raw, err)
+		}
+	}
+}
+
+func TestPruneRegenerableProfileCachesDoesNotFollowSymlinks(t *testing.T) {
+	profile := t.TempDir()
+	outside := t.TempDir()
+	kept := filepath.Join(outside, "component")
+	if err := os.WriteFile(kept, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(profile, "component_crx_cache")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := pruneRegenerableProfileCaches(profile); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(kept); err != nil || string(raw) != "outside" {
+		t.Fatalf("cache prune followed a symlink: %q %v", raw, err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("cache symlink survived: %v", err)
 	}
 }
 

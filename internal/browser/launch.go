@@ -33,6 +33,19 @@ const (
 	chromiumDisabledFeatures = "Translate,BlinkGenPropertyTrees,MacAppCodeSignClone"
 )
 
+type chromiumLaunchFlag struct {
+	name  string
+	value any
+}
+
+// Chrome's component updater can put multi-gigabyte speech and on-device
+// optimization models in an otherwise tiny automation profile. Browser binary
+// updates are the host package manager's job; kitty-browse needs none of these
+// background components, so prevent them at the process boundary.
+var profileHygieneFlags = []chromiumLaunchFlag{
+	{name: "disable-component-update", value: true},
+}
+
 // LaunchOptions controls the Chromium process created from the returned
 // allocator context. Stealth is on by default in kitty-browse, so the process UA
 // is the browser's real one with only the headless token removed. An empty
@@ -109,6 +122,9 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 		allocatorOptions,
 		chromedp.Flag("disable-features", chromiumDisabledFeatures),
 	)
+	for _, flag := range profileHygieneFlags {
+		allocatorOptions = append(allocatorOptions, chromedp.Flag(flag.name, flag.value))
+	}
 	if opts.RequireSandbox {
 		allocatorOptions = append(allocatorOptions, chromedp.Flag("no-sandbox", false))
 	}
@@ -137,7 +153,10 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 			return nil, nil, empty, err
 		}
 		allocatorOptions = append(allocatorOptions, chromedp.UserDataDir(privateDir))
-		downloadDir, temporary, err := prepareDownloadDir(opts.DownloadDir, "")
+		// Keep implicit downloads inside the owner-marked profile. A crash then
+		// leaves one classifiable tree for the stale-profile collector instead of
+		// an unowned downloads directory that can grow forever.
+		downloadDir, _, err := prepareDownloadDir(opts.DownloadDir, privateDir)
 		if err != nil {
 			_ = os.RemoveAll(privateDir)
 			return nil, nil, empty, err
@@ -148,9 +167,6 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 			once.Do(func() {
 				allocatorCancel()
 				_ = os.RemoveAll(privateDir)
-				if temporary {
-					_ = os.RemoveAll(downloadDir)
-				}
 			})
 		}
 		ctx = withIdentityOptions(ctx, identity)
@@ -165,20 +181,27 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	if err := prepareProfileDir(profileDir); err != nil {
 		return nil, nil, empty, err
 	}
+	lock, err := acquireProfileLock(filepath.Join(profileDir, profileLockFile))
+	if err != nil {
+		return nil, nil, empty, fmt.Errorf("lock profile %q: %w", profileDir, err)
+	}
+	releaseOnError := func(err error) (context.Context, context.CancelFunc, ProfileInfo, error) {
+		_ = releaseProfileLock(lock)
+		return nil, nil, empty, err
+	}
 	// A profile is persistent so cookies and logins survive, not so the last
 	// window's tabs come back: the browser shows what this process opened. Left
 	// alone, a profile from a process that was killed restores its old tabs and
 	// activates one of them, pushing the requested page into the background.
 	if err := discardRestoredSession(profileDir); err != nil {
-		return nil, nil, empty, err
+		return releaseOnError(err)
+	}
+	if err := pruneRegenerableProfileCaches(profileDir); err != nil {
+		return releaseOnError(err)
 	}
 	downloadDir, _, err := prepareDownloadDir(opts.DownloadDir, profileDir)
 	if err != nil {
-		return nil, nil, empty, err
-	}
-	lock, err := acquireProfileLock(filepath.Join(profileDir, profileLockFile))
-	if err != nil {
-		return nil, nil, empty, fmt.Errorf("lock profile %q: %w", profileDir, err)
+		return releaseOnError(err)
 	}
 
 	allocatorOptions = append(allocatorOptions, chromedp.UserDataDir(profileDir))
@@ -200,6 +223,35 @@ func NewBrowserContext(parent context.Context, opts LaunchOptions) (context.Cont
 	ctx = withIdentityOptions(ctx, identity)
 	ctx = withDownloadConfig(ctx, newDownloadConfig(downloadDir))
 	return ctx, cancel, info, nil
+}
+
+// pruneRegenerableProfileCaches removes only browser-generated caches and
+// downloaded optional components. Cookies, Local Storage, IndexedDB, history,
+// downloads and every other login-bearing file remain untouched.
+func pruneRegenerableProfileCaches(profileDir string) error {
+	paths := []string{
+		"component_crx_cache",
+		"SODALanguagePacks",
+		"OptGuideOnDeviceModel",
+		"optimization_guide_model_store",
+		"ShaderCache",
+		"GrShaderCache",
+		"GraphiteDawnCache",
+		"DawnGraphiteCache",
+		"DawnWebGPUCache",
+		filepath.Join("Default", "Cache"),
+		filepath.Join("Default", "Code Cache"),
+		filepath.Join("Default", "GPUCache"),
+		filepath.Join("Default", "DawnGraphiteCache"),
+		filepath.Join("Default", "DawnWebGPUCache"),
+	}
+	for _, relative := range paths {
+		path := filepath.Join(profileDir, relative)
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("prune regenerable browser cache %q: %w", path, err)
+		}
+	}
+	return nil
 }
 
 // normalizeProxyServer validates the explicit command-line proxy before any

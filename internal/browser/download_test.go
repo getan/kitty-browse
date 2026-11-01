@@ -20,6 +20,9 @@ func TestDownloadDirectoryLifecycle(t *testing.T) {
 		if !filepath.IsAbs(info.DownloadDir) {
 			t.Fatalf("download dir is not absolute: %q", info.DownloadDir)
 		}
+		if parent := filepath.Base(filepath.Dir(info.DownloadDir)); !strings.HasPrefix(parent, privateProfilePrefix) {
+			t.Fatalf("private downloads are not inside the owner-marked profile: %q", info.DownloadDir)
+		}
 		if stat, err := os.Stat(info.DownloadDir); err != nil || stat.Mode().Perm() != 0o700 {
 			t.Fatalf("private download directory: stat=%v err=%v", stat, err)
 		}
