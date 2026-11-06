@@ -45,11 +45,13 @@ type Bridge struct {
 	Active       atomic.Int64
 	// InputBlocked counts mutating actions only. Read-only observation may run
 	// while a person types; it must not cause the pane to discard their keys.
-	InputBlocked  atomic.Int64
-	limit         chan struct{}
-	gates         sync.Map // target id (or browser scope) -> chan struct{}
-	operatorGates sync.Map // target id -> chan struct{}; excludes only mutations
-	interaction   interactionState
+	InputBlocked      atomic.Int64
+	limit             chan struct{}
+	gates             sync.Map // target id (or browser scope) -> chan struct{}
+	operatorGates     sync.Map // target id -> chan struct{}; excludes only mutations
+	interaction       interactionState
+	selectionRevision atomic.Uint64
+	selection         atomic.Pointer[action.ExplicitSelection]
 }
 
 // NewBridge creates a bridge for one browser identity.
@@ -60,11 +62,21 @@ func NewBridge(id string) *Bridge {
 // Load returns the current snapshot, or nil before the first Update.
 func (b *Bridge) Load() *Snapshot { return b.view.Load() }
 
+// RecordExplicitSelection is called by the host loop only after an explicit
+// control-API tab activation succeeds. Passive or manual selections must not
+// publish it: other surfaces may be intentionally showing a different tab.
+func (b *Bridge) RecordExplicitSelection(tab action.TabInfo) {
+	if tab.ID == "" || tab.TargetID == "" {
+		return
+	}
+	b.selection.Store(&action.ExplicitSelection{Revision: b.selectionRevision.Add(1), TabID: tab.ID, TargetID: tab.TargetID})
+}
+
 // Update is called only by the host loop. Published values are never mutated.
 func (b *Bridge) Update(tabs *browser.Tabs, titles map[*browser.Session]string) {
 	view := &Snapshot{
 		Info: action.Info{APIVersion: action.APIVersion, BrowserID: b.ID, Backend: action.Backend,
-			LoginProfile: b.LoginProfile,
+			LoginProfile: b.LoginProfile, ExplicitSelection: b.selection.Load(),
 			Capabilities: action.Capabilities(), Tabs: []action.TabInfo{}},
 		Sessions: make(map[string]*browser.Session),
 	}

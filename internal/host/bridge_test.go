@@ -31,6 +31,34 @@ func testBridge(tabs []action.TabInfo) *Bridge {
 	return b
 }
 
+func TestExplicitSelectionRevisionIsMonotonicAndSnapshotsAreImmutable(t *testing.T) {
+	b := NewBridge("browser-test")
+	tabs := &browser.Tabs{}
+	b.Update(tabs, nil)
+	before := b.Load()
+	if before.Info.ExplicitSelection != nil {
+		t.Fatal("initial browser advertised an explicit selection")
+	}
+	b.RecordExplicitSelection(action.TabInfo{ID: "a", TargetID: "ta"})
+	b.Update(tabs, nil)
+	first := b.Load()
+	if selection := first.Info.ExplicitSelection; selection == nil || selection.Revision != 1 || selection.TabID != "a" || selection.TargetID != "ta" {
+		t.Fatalf("first selection = %+v", selection)
+	}
+	b.Update(tabs, nil)
+	if selection := b.Load().Info.ExplicitSelection; selection == nil || selection.Revision != 1 {
+		t.Fatalf("a passive refresh changed the selection revision: %+v", selection)
+	}
+	b.RecordExplicitSelection(action.TabInfo{ID: "b", TargetID: "tb"})
+	b.Update(tabs, nil)
+	if selection := b.Load().Info.ExplicitSelection; selection == nil || selection.Revision != 2 || selection.TabID != "b" {
+		t.Fatalf("second selection = %+v", selection)
+	}
+	if before.Info.ExplicitSelection != nil || first.Info.ExplicitSelection.Revision != 1 || first.Info.ExplicitSelection.TabID != "a" {
+		t.Fatal("published snapshots were mutated")
+	}
+}
+
 func TestActionBridgeRejectsUnknownParamsBeforeCDP(t *testing.T) {
 	tab := action.TabInfo{ID: "tab", TargetID: "target", Active: true}
 	b := testBridge([]action.TabInfo{tab})

@@ -344,6 +344,10 @@ func (h *Host) handle(ctx context.Context, call host.Call, load time.Duration) {
 			}
 			h.applyViewport(h.tabs.Active())
 			host.CacheTitle(h.titles, h.tabs.Active())
+			if err := call.Ctx.Err(); err != nil {
+				return nil, err
+			}
+			h.bridge.RecordExplicitSelection(target)
 		case "tab.close":
 			if call.Ctx.Err() != nil {
 				return nil, call.Ctx.Err()

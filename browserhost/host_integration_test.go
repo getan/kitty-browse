@@ -120,6 +120,9 @@ func TestHostResizesBackgroundTabIntegration(t *testing.T) {
 	if err := json.Unmarshal(created.Result, &info); err != nil || len(info.Tabs) != 2 {
 		t.Fatalf("tabs after new: %+v, %v", info, err)
 	}
+	if info.ExplicitSelection != nil {
+		t.Fatalf("tab creation published an explicit selection: %+v", info.ExplicitSelection)
+	}
 	secondID := info.ActiveTabID
 	runTarget := func(id, name, params string) action.Response {
 		t.Helper()
@@ -145,9 +148,18 @@ func TestHostResizesBackgroundTabIntegration(t *testing.T) {
 	if got := hostAction(t, socket, "info", "{}"); json.Unmarshal(got.Result, &info) != nil || info.ActiveTabID != secondID {
 		t.Fatalf("background resize changed active tab: %s", got.Result)
 	}
-	hostAction(t, socket, "tab.activate", fmt.Sprintf(`{"tabId":%q}`, firstID))
+	activated := hostAction(t, socket, "tab.activate", fmt.Sprintf(`{"tabId":%q}`, firstID))
+	if err := json.Unmarshal(activated.Result, &info); err != nil || info.ExplicitSelection == nil ||
+		info.ExplicitSelection.Revision != 1 || info.ExplicitSelection.TabID != firstID || info.ExplicitSelection.TargetID != firstID {
+		t.Fatalf("explicit selection = %+v, %v", info.ExplicitSelection, err)
+	}
 	if got := runTarget(firstID, "eval", `{"script":"window.innerWidth"}`); string(got.Result) != "400" {
 		t.Fatalf("width after activation = %s", got.Result)
+	}
+	again := hostAction(t, socket, "tab.activate", fmt.Sprintf(`{"tabId":%q}`, secondID))
+	if err := json.Unmarshal(again.Result, &info); err != nil || info.ExplicitSelection == nil ||
+		info.ExplicitSelection.Revision != 2 || info.ExplicitSelection.TabID != secondID {
+		t.Fatalf("second explicit selection = %+v, %v", info.ExplicitSelection, err)
 	}
 }
 

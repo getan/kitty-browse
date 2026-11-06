@@ -502,6 +502,10 @@ func runPane(ctx context.Context, opts Options) error {
 					return nil, err
 				}
 				resetScroller()
+				if err := call.Ctx.Err(); err != nil {
+					return nil, err
+				}
+				bridge.RecordExplicitSelection(target)
 			case "tab.close":
 				if call.Ctx.Err() != nil {
 					return nil, call.Ctx.Err()

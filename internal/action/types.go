@@ -30,14 +30,24 @@ type TabInfo struct {
 	Active   bool   `json:"active"`
 }
 
+// ExplicitSelection is the latest successful control-API tab activation. Its
+// revision is scoped to one browser instance and does not change on reads,
+// popup reconciliation, or manual selection in a visible pane.
+type ExplicitSelection struct {
+	Revision uint64 `json:"revision"`
+	TabID    string `json:"tabId"`
+	TargetID string `json:"targetId"`
+}
+
 type Info struct {
-	APIVersion   string       `json:"apiVersion"`
-	BrowserID    string       `json:"browserId"`
-	LoginProfile string       `json:"loginProfile,omitempty"`
-	ActiveTabID  string       `json:"activeTabId"`
-	Backend      string       `json:"backend"`
-	Tabs         []TabInfo    `json:"tabs"`
-	Capabilities []Capability `json:"capabilities"`
+	APIVersion        string             `json:"apiVersion"`
+	BrowserID         string             `json:"browserId"`
+	LoginProfile      string             `json:"loginProfile,omitempty"`
+	ActiveTabID       string             `json:"activeTabId"`
+	Backend           string             `json:"backend"`
+	Tabs              []TabInfo          `json:"tabs"`
+	Capabilities      []Capability       `json:"capabilities"`
+	ExplicitSelection *ExplicitSelection `json:"explicitSelection,omitempty"`
 }
 
 type Capability struct {
