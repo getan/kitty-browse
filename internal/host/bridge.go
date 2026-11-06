@@ -45,10 +45,11 @@ type Bridge struct {
 	Active       atomic.Int64
 	// InputBlocked counts mutating actions only. Read-only observation may run
 	// while a person types; it must not cause the pane to discard their keys.
-	InputBlocked atomic.Int64
-	limit        chan struct{}
-	gates        sync.Map // target id (or browser scope) -> chan struct{}
-	interaction  interactionState
+	InputBlocked  atomic.Int64
+	limit         chan struct{}
+	gates         sync.Map // target id (or browser scope) -> chan struct{}
+	operatorGates sync.Map // target id -> chan struct{}; excludes only mutations
+	interaction   interactionState
 }
 
 // NewBridge creates a bridge for one browser identity.
@@ -186,6 +187,13 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 			break
 		}
 	}
+	if blocksInput && target.ID != "" {
+		releaseInput, acquireErr := acquireGate(op, &b.operatorGates, target.ID)
+		if acquireErr != nil {
+			return respond(target, nil, acquireErr)
+		}
+		defer releaseInput()
+	}
 	if blocksInput && req.Action != "quit" {
 		b.ObserveIntervention(op, view.Sessions[target.ID])
 	}
@@ -227,8 +235,12 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 }
 
 func (b *Bridge) acquire(ctx context.Context, key string) (func(), error) {
+	return acquireGate(ctx, &b.gates, key)
+}
+
+func acquireGate(ctx context.Context, gates *sync.Map, key string) (func(), error) {
 	created := make(chan struct{}, 1)
-	actual, _ := b.gates.LoadOrStore(key, created)
+	actual, _ := gates.LoadOrStore(key, created)
 	gate := actual.(chan struct{})
 	select {
 	case gate <- struct{}{}:

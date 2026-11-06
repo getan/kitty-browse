@@ -103,6 +103,53 @@ func hostAction(t *testing.T, socket, name, params string) action.Response {
 	return response
 }
 
+// A surface can resize its own background tab without changing the selected
+// tab or the viewport saved for another surface's tab.
+func TestHostResizesBackgroundTabIntegration(t *testing.T) {
+	chrome := hostChrome(t)
+	socket := hostTempSocket(t)
+	h := startHost(t, Options{URL: "about:blank", Socket: socket, Chrome: chrome, Private: true, ViewportWidth: 800, ViewportHeight: 600})
+	first := hostAction(t, socket, "info", "{}")
+	var info action.Info
+	if err := json.Unmarshal(first.Result, &info); err != nil || len(info.Tabs) != 1 {
+		t.Fatalf("initial tabs: %+v, %v", info, err)
+	}
+	firstID := info.Tabs[0].ID
+	created := hostAction(t, socket, "tab.new", `{"url":"about:blank"}`)
+	if err := json.Unmarshal(created.Result, &info); err != nil || len(info.Tabs) != 2 {
+		t.Fatalf("tabs after new: %+v, %v", info, err)
+	}
+	secondID := info.ActiveTabID
+	runTarget := func(id, name, params string) action.Response {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), hostRequestTimeout)
+		defer cancel()
+		raw, err := control.Action(ctx, h.Socket(), []byte(fmt.Sprintf(`{"id":"targeted","action":%q,"target":{"tabId":%q},"params":%s}`, name, id, params)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response action.Response
+		if err := json.Unmarshal(raw, &response); err != nil || !response.OK {
+			t.Fatalf("%s: %s, %v", name, raw, err)
+		}
+		return response
+	}
+	runTarget(firstID, "set.viewport", `{"width":400,"height":300}`)
+	if got := runTarget(firstID, "eval", `{"script":"window.innerWidth"}`); string(got.Result) != "400" {
+		t.Fatalf("background width = %s", got.Result)
+	}
+	if got := runTarget(secondID, "eval", `{"script":"window.innerWidth"}`); string(got.Result) != "800" {
+		t.Fatalf("active width = %s", got.Result)
+	}
+	if got := hostAction(t, socket, "info", "{}"); json.Unmarshal(got.Result, &info) != nil || info.ActiveTabID != secondID {
+		t.Fatalf("background resize changed active tab: %s", got.Result)
+	}
+	hostAction(t, socket, "tab.activate", fmt.Sprintf(`{"tabId":%q}`, firstID))
+	if got := runTarget(firstID, "eval", `{"script":"window.innerWidth"}`); string(got.Result) != "400" {
+		t.Fatalf("width after activation = %s", got.Result)
+	}
+}
+
 // The headless host must serve the same contract as the visible pane, and a
 // socket quit must leave nothing behind: no socket file, no Chromium.
 func TestHostServesTheControlContractIntegration(t *testing.T) {

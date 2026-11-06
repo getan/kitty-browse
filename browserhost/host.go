@@ -94,10 +94,13 @@ type Host struct {
 
 	viewportWidth  int
 	viewportHeight int
+	viewports      map[*browser.Session]viewportSize
 
 	closeOnce sync.Once
 	closeErr  error
 }
+
+type viewportSize struct{ width, height int }
 
 // Start launches Chromium, opens the first page and starts serving the control
 // API. It returns once the socket is listening; page load failures leave
@@ -177,6 +180,7 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 
 		viewportWidth:  opts.ViewportWidth,
 		viewportHeight: opts.ViewportHeight,
+		viewports:      make(map[*browser.Session]viewportSize),
 	}
 	h.bridge.LoginProfile = opts.LoginProfile
 	for _, sess := range tabs.Sessions() {
@@ -348,19 +352,17 @@ func (h *Host) handle(ctx context.Context, call host.Call, load time.Duration) {
 				return nil, err
 			}
 			delete(h.titles, selected)
+			delete(h.viewports, selected)
 			h.applyViewport(h.tabs.Active())
 			host.CacheTitle(h.titles, h.tabs.Active())
 		case "set.viewport":
 			if call.Ctx.Err() != nil {
 				return nil, call.Ctx.Err()
 			}
-			if index != h.tabs.Index() {
-				return nil, host.ClientError("target_not_active", "activate the selected tab before changing its viewport")
-			}
 			if err := host.SetViewport(selected, p.Width, p.Height); err != nil {
 				return nil, err
 			}
-			h.viewportWidth, h.viewportHeight = p.Width, p.Height
+			h.viewports[selected] = viewportSize{p.Width, p.Height}
 			h.refresh()
 			return host.ViewportDocument(p.Width, p.Height)
 		case "navigate", "back", "forward", "reload":
@@ -383,14 +385,29 @@ func (h *Host) handle(ctx context.Context, call host.Call, load time.Duration) {
 
 func (h *Host) refresh() { h.bridge.Update(h.tabs, h.titles) }
 
-// pruneTitles drops cached titles for sessions the tab set no longer has.
-func (h *Host) pruneTitles() { host.PruneTitles(h.titles, h.tabs.Sessions()) }
+// pruneTitles drops cached state for sessions the tab set no longer has.
+func (h *Host) pruneTitles() {
+	sessions := h.tabs.Sessions()
+	host.PruneTitles(h.titles, sessions)
+	live := make(map[*browser.Session]bool, len(sessions))
+	for _, sess := range sessions {
+		live[sess] = true
+	}
+	for sess := range h.viewports {
+		if !live[sess] {
+			delete(h.viewports, sess)
+		}
+	}
+}
 
-// applyViewport keeps every newly active tab at the host's emulated page size,
-// so screenshots and coordinates mean the same thing on any tab.
+// applyViewport restores a tab's own viewport, falling back to the host default.
 func (h *Host) applyViewport(sess *browser.Session) {
 	if sess == nil {
 		return
 	}
-	_ = sess.SetViewport(h.viewportWidth, h.viewportHeight)
+	size, ok := h.viewports[sess]
+	if !ok {
+		size = viewportSize{h.viewportWidth, h.viewportHeight}
+	}
+	_ = sess.SetViewport(size.width, size.height)
 }

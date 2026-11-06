@@ -13,10 +13,13 @@ import (
 // every cached title is stale.
 func TestHostPruneTitlesDropsClosedSessions(t *testing.T) {
 	closedPopup := &browser.Session{}
-	h := &Host{tabs: &browser.Tabs{}, titles: map[*browser.Session]string{closedPopup: "popup"}}
+	h := &Host{tabs: &browser.Tabs{}, titles: map[*browser.Session]string{closedPopup: "popup"}, viewports: map[*browser.Session]viewportSize{closedPopup: {640, 480}}}
 	h.pruneTitles()
 	if len(h.titles) != 0 {
 		t.Fatalf("titles = %+v, want an empty cache after the tab set lost every page", h.titles)
+	}
+	if len(h.viewports) != 0 {
+		t.Fatalf("viewports = %+v, want an empty cache after the tab set lost every page", h.viewports)
 	}
 }
 

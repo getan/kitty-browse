@@ -289,6 +289,11 @@ func (s *Session) MouseDown(x, y float64) error {
 	)
 }
 
+// MouseHover moves the pointer without pressing a button.
+func (s *Session) MouseHover(x, y float64) error {
+	return s.sendMouse(mouseMoved(x, y, 0))
+}
+
 // MouseMove drags the left button to x,y.
 func (s *Session) MouseMove(x, y float64) error {
 	return s.sendMouse(mouseMoved(x, y, 1))
@@ -325,11 +330,18 @@ type pageKey struct {
 
 var pageEditingKeys = map[string]pageKey{
 	"Backspace":  {key: "Backspace", code: "Backspace", vk: 8},
+	"Tab":        {key: "Tab", code: "Tab", vk: 9},
 	"Enter":      {key: "Enter", code: "Enter", vk: 13, text: "\r"},
+	"Escape":     {key: "Escape", code: "Escape", vk: 27},
+	"PageUp":     {key: "PageUp", code: "PageUp", vk: 33},
+	"PageDown":   {key: "PageDown", code: "PageDown", vk: 34},
+	"End":        {key: "End", code: "End", vk: 35},
+	"Home":       {key: "Home", code: "Home", vk: 36},
 	"ArrowLeft":  {key: "ArrowLeft", code: "ArrowLeft", vk: 37},
 	"ArrowUp":    {key: "ArrowUp", code: "ArrowUp", vk: 38},
 	"ArrowRight": {key: "ArrowRight", code: "ArrowRight", vk: 39},
 	"ArrowDown":  {key: "ArrowDown", code: "ArrowDown", vk: 40},
+	"Delete":     {key: "Delete", code: "Delete", vk: 46},
 }
 
 // KeyPress sends one editing key to the page's focused element.
