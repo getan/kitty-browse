@@ -5,6 +5,7 @@ package browserhost
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/png"
@@ -147,6 +148,55 @@ func TestHostResizesBackgroundTabIntegration(t *testing.T) {
 	hostAction(t, socket, "tab.activate", fmt.Sprintf(`{"tabId":%q}`, firstID))
 	if got := runTarget(firstID, "eval", `{"script":"window.innerWidth"}`); string(got.Result) != "400" {
 		t.Fatalf("width after activation = %s", got.Result)
+	}
+}
+
+// A target-scoped screenshot must not follow a different globally active tab.
+func TestHostScreenshotTargetsBackgroundTabIntegration(t *testing.T) {
+	chrome := hostChrome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		color := "rgb(220,20,20)"
+		if r.URL.Path == "/blue" {
+			color = "rgb(20,20,220)"
+		}
+		_, _ = fmt.Fprintf(w, `<!doctype html><style>html,body{margin:0;background:%s;width:100%%;height:100%%}</style><body></body>`, color)
+	}))
+	defer server.Close()
+	socket := hostTempSocket(t)
+	startHost(t, Options{URL: server.URL + "/red", Socket: socket, Chrome: chrome, Private: true, ViewportWidth: 240, ViewportHeight: 180})
+	var info action.Info
+	if err := json.Unmarshal(hostAction(t, socket, "info", "{}").Result, &info); err != nil || len(info.Tabs) != 1 {
+		t.Fatalf("initial info = %+v, %v", info, err)
+	}
+	red := info.Tabs[0]
+	created := hostAction(t, socket, "tab.new", fmt.Sprintf(`{"url":%q}`, server.URL+"/blue"))
+	if err := json.Unmarshal(created.Result, &info); err != nil || info.ActiveTabID == red.ID {
+		t.Fatalf("blue tab was not active: %+v, %v", info, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hostRequestTimeout)
+	defer cancel()
+	body := fmt.Sprintf(`{"id":"screenshot","action":"screenshot","target":{"browserId":%q,"tabId":%q,"targetId":%q},"params":{"full":false}}`, info.BrowserID, red.ID, red.TargetID)
+	response := hostActionRaw(t, ctx, socket, body)
+	if !response.OK || response.Meta.TabID != red.ID || response.Meta.TargetID != red.TargetID {
+		t.Fatalf("screenshot targeted wrong tab: %+v", response)
+	}
+	var imageData struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(response.Result, &imageData); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(imageData.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, b, _ := img.At(120, 90).RGBA()
+	if r <= b {
+		t.Fatalf("screenshot shows blue active tab rather than red target: red=%d blue=%d", r, b)
 	}
 }
 

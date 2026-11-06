@@ -204,6 +204,51 @@ func TestTabsReconcilePopupAndExternalCloseIntegration(t *testing.T) {
 	})
 }
 
+// A Chromium WebUI target appearing after the business tab must remain
+// enumerable and closeable without replacing the displayed business tab.
+func TestTabsReconcileKeepsInternalTargetInBackgroundIntegration(t *testing.T) {
+	chrome := os.Getenv("KITTY_BROWSE_CHROME")
+	if chrome == "" {
+		t.Skip("set KITTY_BROWSE_CHROME to run this integration test")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "<!doctype html><title>business</title><body>business</body>")
+	}))
+	defer server.Close()
+	alloc, cancel := integrationAllocator(t, chrome)
+	defer cancel()
+	tabs, err := OpenTabs(alloc, server.URL, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tabs.Close()
+	originalID := tabs.Active().TargetID()
+	created, err := chromedp.CallBrowser(tabs.anchor.Context(), cdptarget.CreateTarget, cdptarget.CreateTargetParams{URL: "chrome://settings/help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForReconcile(t, tabs, func() bool {
+		for _, sess := range tabs.Sessions() {
+			if sess.TargetID() == string(created.TargetID) {
+				return true
+			}
+		}
+		return false
+	})
+	if tabs.Active().TargetID() != originalID {
+		t.Fatalf("internal target changed active tab: %s", tabs.Active().TargetID())
+	}
+	for i, sess := range tabs.Sessions() {
+		if sess.TargetID() == string(created.TargetID) {
+			if err := tabs.CloseTab(i); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatal("internal target disappeared before it could be closed")
+}
+
 func waitForReconcile(t *testing.T, tabs *Tabs, done func() bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

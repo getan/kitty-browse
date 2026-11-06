@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -210,7 +211,8 @@ func (t *Tabs) Screenshot(ctx context.Context, fullPage bool) ([]byte, error) {
 //
 // Reconcile is intended to run on the UI goroutine. It still takes the Tabs
 // write lock so concurrent control-server screenshots cannot race an attach,
-// removal, or active-tab change. Newly discovered pages are selected.
+// removal, or active-tab change. Only popups opened by a known page are
+// selected; restored or browser-internal pages cannot steal the active tab.
 func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 	if t == nil {
 		return false, ErrTabsClosed
@@ -242,13 +244,10 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 		}
 		id := string(info.TargetID)
 		// Every page target stays live, so a tab the person opened as a blank
-		// scratch page is not closed underneath them. It is not attached if it
-		// is new, though: Chromium's own initial target and the blank pages
-		// other tooling opens would otherwise appear in the tab strip and,
-		// because discovered pages are selected, leave the pane on a page that
-		// never paints.
+		// scratch page is not closed underneath them. New blank pages are not
+		// attached until they navigate to a real page.
 		live[id] = true
-		if info.URL == "about:blank" {
+		if info.URL == "" || info.URL == "about:blank" {
 			continue
 		}
 		pages = append(pages, info)
@@ -269,6 +268,7 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 	}
 
 	added := make([]*Session, 0)
+	popupIndex := -1
 	for _, info := range pages {
 		if known[string(info.TargetID)] {
 			continue
@@ -282,6 +282,13 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 		}
 		added = append(added, session)
 		survivors = append(survivors, session)
+		// TargetCreated can precede the first committed URL. attachTarget
+		// refreshes it; classify the actual page, not the stale empty URL.
+		resolved := *info
+		resolved.URL = session.URL()
+		if autoActivatePopup(&resolved, known, live) {
+			popupIndex = len(survivors) - 1
+		}
 	}
 
 	// If an external client closed every user page, immediately restore a real
@@ -293,12 +300,13 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 		}
 		added = append(added, session)
 		survivors = append(survivors, session)
+		popupIndex = len(survivors) - 1
 	}
 
 	changed := len(removed) > 0 || len(added) > 0
 	newIndex := -1
-	if len(added) > 0 {
-		newIndex = len(survivors) - 1
+	if popupIndex >= 0 {
+		newIndex = popupIndex
 		if err := bringToFront(survivors[newIndex]); err != nil {
 			for _, attached := range added {
 				attached.Close()
@@ -313,7 +321,30 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 			}
 		}
 		if newIndex < 0 {
-			newIndex = min(t.index, len(survivors)-1)
+			for i, session := range survivors {
+				if safeBrowsingPage(session.URL()) {
+					newIndex = i
+					break
+				}
+			}
+			if newIndex < 0 {
+				session, err := open(t.anchor.Context(), ctx, "about:blank", syncTimeout)
+				if err != nil {
+					for _, attached := range added {
+						attached.Close()
+					}
+					return false, fmt.Errorf("restore blank tab: %w", err)
+				}
+				added = append(added, session)
+				survivors = append(survivors, session)
+				newIndex = len(survivors) - 1
+			}
+			if err := bringToFront(survivors[newIndex]); err != nil {
+				for _, attached := range added {
+					attached.Close()
+				}
+				return false, err
+			}
 			changed = true
 		}
 	}
@@ -335,6 +366,22 @@ func (t *Tabs) activeLocked() *Session {
 		return nil
 	}
 	return session
+}
+
+func safeBrowsingPage(raw string) bool {
+	if raw == "about:blank" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil
+}
+
+func autoActivatePopup(info *cdptarget.Info, known, live map[string]bool) bool {
+	if info == nil || info.OpenerID == "" || !safeBrowsingPage(info.URL) || info.URL == "about:blank" {
+		return false
+	}
+	opener := string(info.OpenerID)
+	return known[opener] && live[opener]
 }
 
 func userPageTarget(info *cdptarget.Info, anchorID string) bool {
