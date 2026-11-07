@@ -36,6 +36,9 @@ type Options struct {
 	Socket string
 	// Chrome is the Chromium executable path. Empty searches PATH.
 	Chrome string
+	// ProxyServer is an explicit reviewed proxy; ambient proxy variables are not
+	// used. Credentials in the proxy URL are rejected by the browser launcher.
+	ProxyServer string
 	// ProfileDir is a dedicated persistent profile. Empty uses kitty-browse's
 	// own configuration directory.
 	ProfileDir string
@@ -102,6 +105,14 @@ type Host struct {
 
 type viewportSize struct{ width, height int }
 
+func launchOptions(opts Options) browser.LaunchOptions {
+	return browser.LaunchOptions{
+		ExecutablePath: opts.Chrome, ProfileDir: opts.ProfileDir, DownloadDir: opts.DownloadDir,
+		Private: opts.Private, Stealth: opts.Stealth, UserAgent: opts.UserAgent, ProxyServer: opts.ProxyServer,
+		BrowserOutput: opts.BrowserOutput, RequireSandbox: opts.RequireSandbox,
+	}
+}
+
 // Start launches Chromium, opens the first page and starts serving the control
 // API. It returns once the socket is listening; page load failures leave
 // Chromium's error page and the socket alive, exactly like the pane.
@@ -129,12 +140,7 @@ func Start(ctx context.Context, opts Options) (*Host, error) {
 	// bounded by the caller (golder: 45s) and would otherwise kill every later
 	// CDP call, screenshots included, the moment startup finished.
 	lifeCtx, stopLife := context.WithCancel(context.WithoutCancel(ctx))
-	browserCtx, closeAlloc, _, err := browser.NewBrowserContext(lifeCtx, browser.LaunchOptions{
-		ExecutablePath: opts.Chrome, ProfileDir: opts.ProfileDir, DownloadDir: opts.DownloadDir,
-		Private: opts.Private, Stealth: opts.Stealth, UserAgent: opts.UserAgent,
-		BrowserOutput:  opts.BrowserOutput,
-		RequireSandbox: opts.RequireSandbox,
-	})
+	browserCtx, closeAlloc, _, err := browser.NewBrowserContext(lifeCtx, launchOptions(opts))
 	if err != nil {
 		stopLife()
 		return nil, err
