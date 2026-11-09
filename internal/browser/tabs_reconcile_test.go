@@ -33,3 +33,26 @@ func TestOnlyKnownPagePopupsCanStealFocus(t *testing.T) {
 		t.Fatal("a closed opener selected its popup")
 	}
 }
+
+func TestScopedTabsAdoptOnlyTheirOwnPopups(t *testing.T) {
+	owned := map[string]bool{"a": true, "a-popup": true, "closed": true}
+	live := map[string]bool{"a": true, "a-popup": true}
+	for _, tc := range []struct {
+		name string
+		info *cdptarget.Info
+		want bool
+	}{
+		{"own popup", &cdptarget.Info{OpenerID: "a"}, true},
+		{"own descendant", &cdptarget.Info{OpenerID: "a-popup"}, true},
+		{"another view's popup", &cdptarget.Info{OpenerID: "b"}, false},
+		{"closed opener", &cdptarget.Info{OpenerID: "closed"}, false},
+		{"top-level page", &cdptarget.Info{}, false},
+		{"nil", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ownedPopup(tc.info, owned, live); got != tc.want {
+				t.Fatalf("ownedPopup(%+v) = %v, want %v", tc.info, got, tc.want)
+			}
+		})
+	}
+}

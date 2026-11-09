@@ -24,6 +24,7 @@ type Tabs struct {
 	sessions []*Session
 	index    int
 	closed   bool
+	scoped   bool
 }
 
 // ErrLastTab is returned when closing a tab would leave no user-visible tab.
@@ -40,6 +41,17 @@ func OpenTabs(parent context.Context, target string, timeout time.Duration) (*Ta
 // OpenTabsWithReady marks the CDP startup boundary after the about:blank
 // anchor is connected, BEFORE navigating to any user page.
 func OpenTabsWithReady(parent context.Context, target string, timeout time.Duration, ready func()) (*Tabs, error) {
+	return openTabs(parent, target, timeout, ready, false)
+}
+
+// OpenScopedTabs creates an independent tab collection within an already
+// running Chromium. Reconciliation adopts only popups of its own pages; other
+// collections' pages and browser-lifetime anchors remain invisible.
+func OpenScopedTabs(parent context.Context, target string, timeout time.Duration) (*Tabs, error) {
+	return openTabs(parent, target, timeout, nil, true)
+}
+
+func openTabs(parent context.Context, target string, timeout time.Duration, ready func(), scoped bool) (*Tabs, error) {
 	anchor, err := Open(parent, "about:blank", timeout)
 	if err != nil {
 		return nil, fmt.Errorf("open browser anchor: %w", err)
@@ -48,7 +60,7 @@ func OpenTabsWithReady(parent context.Context, target string, timeout time.Durat
 		ready()
 	}
 
-	tabs := &Tabs{anchor: anchor, index: -1}
+	tabs := &Tabs{anchor: anchor, index: -1, scoped: scoped}
 	// The first page is opened best-effort: a server that is not up yet leaves
 	// Chromium's error page on screen and the control socket alive, which is
 	// exactly what the caller needs to see.
@@ -273,6 +285,9 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 		if known[string(info.TargetID)] {
 			continue
 		}
+		if t.scoped && !ownedPopup(info, known, live) {
+			continue
+		}
 		session, err := attachTarget(t.anchor.Context(), info)
 		if err != nil {
 			for _, attached := range added {
@@ -282,6 +297,7 @@ func (t *Tabs) Reconcile(ctx context.Context) (bool, error) {
 		}
 		added = append(added, session)
 		survivors = append(survivors, session)
+		known[string(info.TargetID)] = true
 		// TargetCreated can precede the first committed URL. attachTarget
 		// refreshes it; classify the actual page, not the stale empty URL.
 		resolved := *info
@@ -374,6 +390,13 @@ func safeBrowsingPage(raw string) bool {
 	}
 	u, err := url.Parse(raw)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil
+}
+
+// ownedPopup prevents another view's top-level tabs from being adopted. The
+// opener must already be in this collection; newly attached descendants are
+// eligible on this or a later reconciliation pass.
+func ownedPopup(info *cdptarget.Info, known, live map[string]bool) bool {
+	return info != nil && info.OpenerID != "" && known[string(info.OpenerID)] && live[string(info.OpenerID)]
 }
 
 func autoActivatePopup(info *cdptarget.Info, known, live map[string]bool) bool {

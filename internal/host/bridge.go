@@ -103,6 +103,16 @@ func (b *Bridge) Information(context.Context) (json.RawMessage, error) {
 
 // Execute serves /v1/actions.
 func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	return b.execute(ctx, raw, false)
+}
+
+// ExecuteOperator is an authenticated embedding seam, never a control-API
+// action. Only bounded browser chrome operations are accepted by its caller.
+func (b *Bridge) ExecuteOperator(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	return b.execute(ctx, raw, true)
+}
+
+func (b *Bridge) execute(ctx context.Context, raw json.RawMessage, operator bool) (json.RawMessage, error) {
 	var req action.Request
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -206,10 +216,10 @@ func (b *Bridge) Execute(ctx context.Context, raw json.RawMessage) (json.RawMess
 		}
 		defer releaseInput()
 	}
-	if blocksInput && req.Action != "quit" {
+	if blocksInput && !operator && req.Action != "quit" {
 		b.ObserveIntervention(op, view.Sessions[target.ID])
 	}
-	finish, err := b.beginInteractionAt(req.Action, blocksInput, epoch)
+	finish, err := b.beginInteractionAt(req.Action, blocksInput && !operator, epoch)
 	if err != nil {
 		return respond(target, nil, err)
 	}

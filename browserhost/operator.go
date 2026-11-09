@@ -82,6 +82,35 @@ func (h *Host) SendOperatorInput(ctx context.Context, event OperatorInput) error
 	})
 }
 
+// OperatorAction lets a trusted surface use browser chrome while automation is
+// paused. This closed set has no scripts, file access or arbitrary page actions.
+// It is intentionally absent from /v1/actions and requires a private capability
+// when called through the shared host's separate management socket.
+func (h *Host) OperatorAction(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	if h == nil || h.bridge == nil {
+		return nil, errors.New("browser host is unavailable")
+	}
+	var req action.Request
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if len(raw) > 8192 || d.Decode(&req) != nil {
+		return nil, errors.New("invalid operator action")
+	}
+	var extra any
+	if d.Decode(&extra) != io.EOF {
+		return nil, errors.New("operator action must contain one request")
+	}
+	if req.Target.BrowserID != h.bridge.ID {
+		return nil, errors.New("operator action belongs to another view")
+	}
+	switch req.Action {
+	case "navigate", "back", "forward", "reload", "tab.new", "tab.activate", "tab.close", "set.viewport", "quit", "interaction.resume", "interaction.pause":
+	default:
+		return nil, errors.New("unsupported operator chrome action")
+	}
+	return h.bridge.ExecuteOperator(ctx, raw)
+}
+
 func validateOperatorInput(event OperatorInput) error {
 	if event.BrowserID == "" || event.TabID == "" || event.TargetID == "" {
 		return errors.New("operator input requires an exact browser and tab target")

@@ -33,6 +33,7 @@ const (
 	KeyCellPixels
 	// KeyIgnored is terminal metadata that is not a key, such as an APC reply.
 	KeyIgnored
+	KeyTab
 )
 
 // Event is a key or terminal event.
@@ -62,6 +63,8 @@ func ReadEvent(r *bufio.Reader) (Event, error) {
 		return Event{}, err
 	}
 	switch b {
+	case '\t':
+		return Event{Kind: KeyTab}, nil
 	case '\r', '\n':
 		return Event{Kind: KeyEnter}, nil
 	case 0x7f, 0x08:
