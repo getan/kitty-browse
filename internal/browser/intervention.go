@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -11,8 +12,18 @@ import (
 // on the current document. It never returns page text or treats an unrelated
 // image/analytics 429, login form or an article mentioning CAPTCHAs as a block.
 func (s *Session) Intervention(ctx context.Context) (string, error) {
+	info, err := s.InterventionDetails(ctx)
+	return info.Reason, err
+}
+
+type InterventionInfo struct {
+	Reason     string
+	RetryAfter time.Time
+}
+
+func (s *Session) InterventionDetails(ctx context.Context) (InterventionInfo, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return InterventionInfo{}, err
 	}
 	op, cancel := s.inspectContext(ctx)
 	defer cancel()
@@ -40,11 +51,9 @@ func (s *Session) Intervention(ctx context.Context) (string, error) {
   return result('');
 })()`))
 	if err != nil {
-		return "", err
+		return InterventionInfo{}, err
 	}
-	if got.Reason != "" {
-		return got.Reason, nil
-	}
+	info := InterventionInfo{Reason: got.Reason}
 	if value, ok := sessionObservers.Load(s); ok {
 		o := value.(*observer)
 		o.mu.Lock()
@@ -53,11 +62,14 @@ func (s *Session) Intervention(ctx context.Context) (string, error) {
 			r := o.requests[i]
 			if string(r.ResourceType) == "Document" && strings.Split(r.URL, "#")[0] == got.URL {
 				if r.Status == 429 {
-					return "rate_limited", nil
+					if info.Reason == "" {
+						info.Reason = "rate_limited"
+					}
+					info.RetryAfter = r.retryAfter
 				}
 				break
 			}
 		}
 	}
-	return "", nil
+	return info, nil
 }

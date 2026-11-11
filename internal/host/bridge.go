@@ -173,12 +173,23 @@ func (b *Bridge) execute(ctx context.Context, raw json.RawMessage, operator bool
 		// Even a raw JSON request without selectors is pinned at acceptance time.
 		req.Target = action.Target{BrowserID: view.Info.BrowserID, TabID: target.ID, TargetID: target.TargetID}
 	}
-	if req.Action == "interaction.status" || req.Action == "interaction.pause" || req.Action == "interaction.resume" {
+	if req.Action == "interaction.status" || req.Action == "interaction.status.v2" || req.Action == "interaction.pause" || req.Action == "interaction.resume" {
 		switch req.Action {
 		case "interaction.pause":
-			b.Pause("manual")
+			source, reason := "agent", "agent_requested"
+			if operator {
+				source, reason = "operator", "operator_requested"
+			}
+			var params struct {
+				Reason string `json:"reason"`
+			}
+			_ = json.Unmarshal(req.Params, &params)
+			if !operator && (params.Reason == "user_requested" || params.Reason == "assistance_required") {
+				reason = params.Reason
+			}
+			b.pauseFrom(reason, source)
 		case "interaction.resume":
-			b.Resume()
+			return respond(target, nil, ClientError("browser_continuation_required", "use the local Resume automation button; automation cannot clear a pause"))
 		}
 		result, _ := json.Marshal(b.Interaction())
 		return respond(target, result, nil)
@@ -219,7 +230,7 @@ func (b *Bridge) execute(ctx context.Context, raw json.RawMessage, operator bool
 	if blocksInput && !operator && req.Action != "quit" {
 		b.ObserveIntervention(op, view.Sessions[target.ID])
 	}
-	finish, err := b.beginInteractionAt(req.Action, blocksInput && !operator, epoch)
+	finish, err := b.beginInteractionFor(req.Action, blocksInput, epoch, operator)
 	if err != nil {
 		return respond(target, nil, err)
 	}
@@ -276,7 +287,7 @@ func acquireGate(ctx context.Context, gates *sync.Map, key string) (func(), erro
 // than one tab.
 func BrowserScopedAction(name string) bool {
 	switch name {
-	case "info", "capabilities", "done", "quit", "tab.list", "tab.new", "interaction.status", "interaction.pause", "interaction.resume":
+	case "info", "capabilities", "done", "quit", "tab.list", "tab.new", "interaction.status", "interaction.status.v2", "interaction.pause", "interaction.resume":
 		return true
 	}
 	return false

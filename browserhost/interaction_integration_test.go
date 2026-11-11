@@ -61,8 +61,12 @@ func TestInterventionPausesNativeActionsIntegration(t *testing.T) {
 	}
 	// Explicit operator resume clears the latch, but a still-visible challenge
 	// is detected again before another mutation is sent.
-	if got := run("interaction.resume", `{}`); !got.OK {
-		t.Fatal("explicit resume failed")
+	if got := run("interaction.resume", `{}`); got.OK || got.Error == nil || got.Error.Code != "browser_continuation_required" {
+		t.Fatal("public automation could clear the pause")
+	}
+	state := h.bridge.Interaction()
+	if err := h.ContinueChecked(ctx, ContinueRequest{BrowserID: state.BrowserID, InstanceEpoch: state.InstanceEpoch, PauseGeneration: state.PauseGeneration, RequestID: "local-person-recovery", ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
 	}
 	if got := run("click", `{"selector":"#send"}`); got.OK || got.Error == nil || got.Error.Code != "browser_paused" {
 		t.Fatal("resume bypassed a visible challenge")

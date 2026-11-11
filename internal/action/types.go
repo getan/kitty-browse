@@ -357,7 +357,8 @@ func Capabilities() []Capability {
 		cap("info", "Host-managed API information.", true, empty), cap("capabilities", "Host-managed capability listing.", true, empty), cap("done", "Host-managed action mode completion.", false, empty),
 		cap("quit", "Host-managed graceful browser shutdown; the reply is sent before the control socket closes.", false, empty),
 		cap("interaction.status", "Read agent activity and automatic-action pause state.", true, empty),
-		cap("interaction.pause", "Pause future automatic mutations; manual interaction and observation remain available.", false, empty),
-		cap("interaction.resume", "Explicit operator resume; never replays previous actions.", false, empty),
+		cap("interaction.status.v2", "Read identity, pause generation and checked-recovery support without page input.", true, empty),
+		cap("interaction.pause", "Pause future automatic mutations; manual interaction and observation remain available.", false, map[string]any{"reason": map[string]any{"type": "string", "enum": []string{"user_requested", "assistance_required"}}}),
+		cap("interaction.resume", "Automation cannot clear pauses; use the private checked operator recovery control.", false, empty),
 	}
 }

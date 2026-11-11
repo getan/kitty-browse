@@ -313,6 +313,9 @@ kitty-browse action -socket "$SOCKET" -- frame main
 | `set.viewport` | no | `width,height` 必填；实现范围均为 1..8192，且 target 必须先是 active tab |
 | `done` | no | `{}`；返回 `{"released":true}`，表示 action mode 完成，不关闭浏览器 |
 | `quit` | no | `{}`；返回 `{"quitting":true}`，随后宿主优雅关闭（等价于 `POST /v1/quit`） |
+| `interaction.status`, `interaction.status.v2` | yes | `{}`；后者广告条件恢复契约，返回 view 实例与 pause generation、source、已恢复代际、busy、closed、可选 Retry-After 毫秒数 |
+| `interaction.pause` | no | 可选 `reason=user_requested\|assistance_required`；普通 automation 的来源始终是 agent，省略记为 agent_requested |
+| `interaction.resume` | no | 兼容名称保留，但普通 automation 一律返回 browser_continuation_required；只能由可信前端走私有 ContinueChecked 恢复 |
 
 ```json
 {"action":"tab.new","params":{"url":"https://example.com"}}

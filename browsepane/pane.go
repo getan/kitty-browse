@@ -16,6 +16,7 @@ package browsepane
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -593,6 +594,7 @@ func runPane(ctx context.Context, opts Options) error {
 				return nil
 			}
 		case <-resize:
+			model.CancelFooterPress()
 			rows, cols = screen.Refresh()
 			pixels.WidthPx, pixels.HeightPx = cols*pixels.CellW, rows*pixels.CellH
 			if bridge.Active.Load() > 0 {
@@ -758,8 +760,24 @@ func runPane(ctx context.Context, opts Options) error {
 			if !ok {
 				continue
 			}
-			if ev.Kind == term.KeyCtrlG {
-				bridge.Resume()
+			command, footerKey := model.HandleFooterKey(ev)
+			if footerKey || ev.Kind == term.KeyMouse && (ev.Mouse.Row == rows || model.FooterMouseActive()) {
+				if !footerKey {
+					command = model.HandleFooterMouse(cols, rows, ev.Mouse)
+				}
+				if command.Kind == ui.ActionResumeAutomation {
+					model.Status, model.ResumeBusy = "Resuming automation…", true
+					drawChrome(screen, model, store)
+					if err := bridge.ContinueChecked(ctx, host.ContinueRequest{BrowserID: bridge.ID, InstanceEpoch: command.InstanceEpoch, PauseGeneration: command.PauseGeneration, RequestID: rand.Text(), ExpiresAt: time.Now().Add(4 * time.Minute)}); err != nil {
+						model.Status = err.Error()
+					} else {
+						model.Status = "Automation resumed"
+					}
+					model.ResumeBusy = false
+				}
+				if command.Kind == ui.ActionKeepPaused {
+					model.Status = "Automation remains paused"
+				}
 				model.Interaction = bridge.Interaction()
 				drawChrome(screen, model, store)
 				continue

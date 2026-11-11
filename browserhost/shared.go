@@ -56,11 +56,13 @@ type RemoteView struct {
 }
 
 type sharedRequest struct {
-	ID          string          `json:"id"`
-	URL         string          `json:"url,omitempty"`
-	ProxyServer string          `json:"proxyServer,omitempty"`
-	Input       *OperatorInput  `json:"input,omitempty"`
-	Action      json.RawMessage `json:"action,omitempty"`
+	ID           string           `json:"id"`
+	URL          string           `json:"url,omitempty"`
+	ProxyServer  string           `json:"proxyServer,omitempty"`
+	Input        *OperatorInput   `json:"input,omitempty"`
+	Action       json.RawMessage  `json:"action,omitempty"`
+	Continuation *ContinueRequest `json:"continuation,omitempty"`
+	Challenge    string           `json:"challenge,omitempty"`
 }
 
 type sharedRecord struct {
@@ -313,6 +315,36 @@ func (s *sharedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = w.Write(raw)
+	case "/continue", "/continuation-outcome", "/attest":
+		if !operator {
+			http.Error(w, "operator connection required", 403)
+			return
+		}
+		if r.URL.Path == "/attest" {
+			if len(req.Challenge) < 16 || len(req.Challenge) > 128 {
+				http.Error(w, "attestation challenge required", 400)
+				return
+			}
+			mode := "direct"
+			if s.opts.Browser.ProxyServer != "" {
+				mode = "proxy"
+			}
+			_ = json.NewEncoder(w).Encode(ViewAttestation{ViewID: req.ID, BrowserID: record.view.bridge.ID, InstanceEpoch: record.view.bridge.ID, Socket: record.view.Socket(), LoginProfile: s.opts.Browser.LoginProfile, ProxyMode: mode, ChromiumSandbox: s.opts.Browser.RequireSandbox, Challenge: req.Challenge, RuntimeEnvelope: "browser_runtime", RuntimePolicyDigest: RuntimePolicyDigest(s.opts.Browser)})
+			return
+		}
+		if req.Continuation == nil {
+			http.Error(w, "continuation required", 400)
+			return
+		}
+		if r.URL.Path == "/continuation-outcome" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"outcome": record.view.bridge.ContinuationOutcome(*req.Continuation)})
+			return
+		}
+		if err := record.view.ContinueChecked(ctx, *req.Continuation); err != nil {
+			http.Error(w, err.Error(), 409)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(record.view.bridge.Interaction())
 	case "/heartbeat":
 		if !operator {
 			http.Error(w, "operator connection required", 403)
