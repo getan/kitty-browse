@@ -37,15 +37,19 @@ const (
 	ActionCloseTab
 	ActionEditAddress
 	ActionQuit
+	ActionResumeAutomation
+	ActionKeepPaused
 )
 
 // Action is the result of one key event.
 type Action struct {
-	Kind  ActionKind
-	URL   string
-	Label string
-	Hint  *browser.Hint
-	Index int
+	Kind            ActionKind
+	URL             string
+	Label           string
+	Hint            *browser.Hint
+	Index           int
+	PauseGeneration uint64
+	InstanceEpoch   string
 }
 
 // TabInfo is the display information for one browser tab.
@@ -56,17 +60,24 @@ type TabInfo struct {
 
 // Model is the address bar and status state.
 type Model struct {
-	URL          string
-	Address      string
-	Editing      bool
-	Status       string
-	Tabs         []TabInfo
-	ActiveTab    int
-	CanGoBack    bool
-	CanGoForward bool
-	Private      bool
-	AgentActive  bool
-	Interaction  host.InteractionState
+	URL                              string
+	Address                          string
+	Editing                          bool
+	Status                           string
+	Tabs                             []TabInfo
+	ActiveTab                        int
+	CanGoBack                        bool
+	CanGoForward                     bool
+	Private                          bool
+	AgentActive                      bool
+	Interaction                      host.InteractionState
+	footerPress                      Action
+	footerPressCols, footerPressRows int
+	footerFocus                      int
+	footerFocusEpoch                 string
+	footerFocusGeneration            uint64
+	ResumeBusy                       bool
+	ResumeUnknown                    bool
 
 	// replaceAddress records the selection made by clicking the address field.
 	// The next typed character replaces the selection rather than appending.
@@ -146,7 +157,25 @@ func (m *Model) Footer(bookmarked bool) string {
 			line += " · input ignored; try after completion"
 		}
 	case state.Paused:
-		line = "Automation paused: " + state.Reason + " · manual input ready · Ctrl+G resume"
+		line = "[Resume automation] [Keep paused] · Automation paused: " + state.Reason + " · Ctrl+G resume"
+		if m.Status != "" {
+			line = "[Resume automation] [Keep paused] · " + m.Status
+		}
+		if m.footerFocus == 1 {
+			line = "{Resume automation}" + line[19:]
+		}
+		if m.footerFocus == 2 {
+			line = line[:20] + "{Keep paused}" + line[33:]
+		}
+		if state.ContinuationVersion != 1 {
+			line = "Automation paused: " + state.Reason + " · recovery unavailable: upgrade the browser host"
+		}
+		if m.ResumeBusy {
+			line = "Resuming automation… · please wait"
+		}
+		if m.ResumeUnknown {
+			line = "Resume outcome unknown; inspect status, do not resend"
+		}
 	case state.Busy:
 		line = "Agent observing: " + state.Action + " · manual input ready"
 	case state.Completed:
@@ -157,6 +186,9 @@ func (m *Model) Footer(bookmarked bool) string {
 		line = "Manual input ready · " + line
 	}
 	if m.Private {
+		if state.Paused {
+			return line + " · PRIVATE"
+		}
 		return "PRIVATE · " + line
 	}
 	return line

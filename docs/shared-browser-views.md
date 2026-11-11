@@ -30,16 +30,21 @@ must keep the master credential outside its agents' file boundary.
 
 `RemoteView.SendOperatorInput` preserves the existing ManualTarget exclusion;
 `OperatorAction` accepts only native navigation, tab/viewport changes, pause,
-explicit resume and view quit. It never accepts eval, cookie reads, upload or
+and view quit. It never accepts eval, cookie reads, upload or
 arbitrary page operations. Operator chrome may work while automation is paused,
-but leaves that pause in place. Only explicit resume clears it.
+but leaves that pause in place. Recovery uses the separate, generation-checked
+`RemoteView.ContinueChecked` private API; public `interaction.resume` is refused.
 
 `browsepane.RunSharedPane` is a terminal operator surface for a RemoteView,
 sharing the existing terminal parsers, toolbar and image encoders. It forwards
 ordinary typing (including q/r/T/W) to the page; Ctrl+L edits the address,
-Ctrl+G explicitly resumes, and Ctrl+Q closes only that view. The shared pane
+and Ctrl+Q closes only that view. A paused footer has clickable **Resume
+automation** and **Keep paused** buttons. Tab focuses them and Enter/Space
+activates the selected control. Ctrl+G remains an auxiliary shortcut to the
+same checked recovery, not the implementation of the button. The shared pane
 uses bounded PNG frames rather than owning Chromium's screencast connection.
-The standalone `browsepane.Run` path is unchanged.
+The standalone `browsepane.Run` uses the same checked recovery contract.
+See [checked recovery](checked-recovery.md) for identity, receipts and cooldowns.
 
 ## Validation
 

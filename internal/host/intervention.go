@@ -15,7 +15,12 @@ func (b *Bridge) ObserveIntervention(ctx context.Context, sess *browser.Session)
 	}
 	probe, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
-	if reason, err := sess.Intervention(probe); err == nil && reason != "" {
-		b.Pause(reason)
+	if info, err := sess.InterventionDetails(probe); err == nil && info.Reason != "" {
+		b.interaction.mu.Lock()
+		if info.RetryAfter.After(b.interaction.retryAfter) {
+			b.interaction.retryAfter = info.RetryAfter
+		}
+		b.interaction.mu.Unlock()
+		b.Pause(info.Reason)
 	}
 }

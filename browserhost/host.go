@@ -238,6 +238,7 @@ func (h *Host) Wait() error {
 
 // Close asks the browser to quit and returns once it has.
 func (h *Host) Close() error {
+	h.bridge.CloseInteraction()
 	h.quit.Request()
 	<-h.done
 	return h.shutdown()
@@ -245,6 +246,7 @@ func (h *Host) Close() error {
 
 func (h *Host) shutdown() error {
 	h.closeOnce.Do(func() {
+		h.bridge.CloseInteraction()
 		var errs []error
 		if h.server != nil {
 			errs = append(errs, h.server.Close())

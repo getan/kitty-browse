@@ -3,6 +3,7 @@ package browsepane
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,31 @@ func (p *remotePane) command(ctx context.Context, command ui.Action) error {
 		return p.chrome(ctx, "forward", map[string]any{}, active)
 	case ui.ActionReload:
 		return p.chrome(ctx, "reload", map[string]any{}, active)
+	case ui.ActionResumeAutomation:
+		p.model.Status = "Resuming automation…"
+		p.model.ResumeBusy = true
+		drawChrome(p.screen, p.model, p.store)
+		req := browserhost.ContinueRequest{BrowserID: p.view.BrowserID, InstanceEpoch: command.InstanceEpoch, PauseGeneration: command.PauseGeneration, RequestID: rand.Text(), ExpiresAt: time.Now().Add(4 * time.Minute)}
+		err := p.view.ContinueChecked(ctx, req)
+		if err != nil {
+			query, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			outcome, queryErr := p.view.ContinuationOutcome(query, req)
+			cancel()
+			if queryErr == nil && outcome == "resumed" {
+				err = nil
+			} else if queryErr != nil || outcome != "not_consumed" {
+				p.model.ResumeUnknown = true
+			}
+		}
+		p.model.ResumeBusy = false
+		if err == nil {
+			p.model.Status = "Automation resumed"
+			p.model.Interaction.Paused = false
+			p.model.Interaction.ResumedGeneration = command.PauseGeneration
+		}
+		return err
+	case ui.ActionKeepPaused:
+		p.model.Status = "Automation remains paused"
 	case ui.ActionScreenshot, ui.ActionScreenshotFull:
 		full := command.Kind == ui.ActionScreenshotFull
 		data, err := control.Capture(ctx, p.view.Socket, full)
@@ -241,7 +267,12 @@ func RunSharedPane(ctx context.Context, opts Options, view *browserhost.RemoteVi
 			capture()
 		case f := <-frames:
 			busy = false
-			p.model.Interaction = f.status
+			if f.status.PauseGeneration > p.model.Interaction.PauseGeneration || f.status.PauseGeneration == p.model.Interaction.PauseGeneration && f.status.ResumedGeneration >= p.model.Interaction.ResumedGeneration {
+				if f.status.PauseGeneration > p.model.Interaction.PauseGeneration {
+					p.model.ResumeUnknown = false
+				}
+				p.model.Interaction = f.status
+			}
 			if f.err != nil {
 				p.model.Status = f.err.Error()
 				draw()
@@ -265,6 +296,7 @@ func RunSharedPane(ctx context.Context, opts Options, view *browserhost.RemoteVi
 			}
 			draw()
 		case <-resize:
+			p.model.CancelFooterPress()
 			rows, cols = screen.Refresh()
 			geom = paneGeometry(rows, cols, pixels, 0, 0)
 			writer, err = render.NewImageWriter(cols, geom.ContentRows, kitty)
@@ -282,10 +314,11 @@ func RunSharedPane(ctx context.Context, opts Options, view *browserhost.RemoteVi
 			if ev.Kind == term.KeyCtrlC || ev.Kind == term.KeyCtrlQ {
 				return nil
 			}
-			if ev.Kind == term.KeyCtrlG {
-				if err := p.chrome(ctx, "interaction.resume", map[string]any{}, ""); err != nil {
+			if command, handled := p.model.HandleFooterKey(ev); handled {
+				if err := p.command(ctx, command); err != nil {
 					p.model.Status = err.Error()
 				}
+				draw()
 				continue
 			}
 			if ev.Kind == term.KeyCellPixels {
@@ -293,7 +326,9 @@ func RunSharedPane(ctx context.Context, opts Options, view *browserhost.RemoteVi
 				continue
 			}
 			var command ui.Action
-			if ev.Kind == term.KeyMouse && ev.Mouse.Row <= term.ChromeRows {
+			if ev.Kind == term.KeyMouse && (ev.Mouse.Row == rows || p.model.FooterMouseActive()) {
+				command = p.model.HandleFooterMouse(cols, rows, ev.Mouse)
+			} else if ev.Kind == term.KeyMouse && ev.Mouse.Row <= term.ChromeRows {
 				command = p.model.HandleMouse(cols, ev.Mouse)
 			} else if ev.Kind == term.KeyMouse {
 				x, y, inside := geom.CellToPixelClamped(ev.Mouse.Col, ev.Mouse.Row)

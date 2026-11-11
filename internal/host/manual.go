@@ -66,5 +66,10 @@ func (b *Bridge) ManualTarget(ctx context.Context, requested action.Target, oper
 	if sess == nil || sess.Context() == nil || sess.Context().Err() != nil {
 		return ClientError("target_not_found", "selected tab is closed")
 	}
+	finish, err := b.beginInteractionFor("operator.input", true, b.pauseEpoch(), true)
+	if err != nil {
+		return err
+	}
+	defer finish()
 	return operation(sess)
 }

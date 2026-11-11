@@ -46,6 +46,7 @@ type observedRequest struct {
 	DurationMS        float64                 `json:"durationMs,omitempty"`
 	Timing            *network.ResourceTiming `json:"timing,omitempty"`
 	start             float64
+	retryAfter        time.Time // only a parsed deadline, never response headers
 }
 
 type observedMessage struct {
@@ -228,6 +229,9 @@ func (o *observer) handleEvent(event any) {
 		if r := o.byID[e.RequestID]; r != nil && e.Response != nil {
 			r.Status = e.Response.Status
 			r.ResourceType = e.Type
+			if e.Response.Status == 429 {
+				r.retryAfter = responseRetryAfter(e.Response.Headers, time.Now())
+			}
 			r.MIME = e.Response.MimeType
 			r.Timing = e.Response.Timing
 			r.EncodedDataLength = e.Response.EncodedDataLength
