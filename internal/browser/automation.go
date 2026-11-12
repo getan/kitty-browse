@@ -322,6 +322,7 @@ type snapshotNode struct {
 	Depth    int    `json:"depth"`
 	Disabled bool   `json:"disabled,omitempty"`
 	Checked  any    `json:"checked,omitempty"`
+	Visible  *bool  `json:"visible,omitempty"`
 }
 
 func strval(v axValue) string {
@@ -434,6 +435,7 @@ func (st *automationState) snapshot(ctx context.Context, t cdp.Session, p map[st
 	}
 	nodes := make([]snapshotNode, 0)
 	truncated := false
+	radioBudget, textBudget := 64, 64 // bounded extra CDP calls; omitted means unknown
 	for _, raw := range r.Nodes {
 		if raw == nil {
 			continue
@@ -478,6 +480,13 @@ func (st *automationState) snapshot(ctx context.Context, t cdp.Session, p map[st
 		}
 		st.refs[ref] = automationRef{Backend: n.BackendDOMNodeID, Loader: loader, Frame: st.frame, Target: st.targetKey()}
 		sn := snapshotNode{Ref: "@" + ref, Role: role, Name: strval(n.Name), Depth: d}
+		if strings.EqualFold(role, "radio") && radioBudget > 0 {
+			radioBudget--
+			sn.Visible = snapshotNodeVisibility(ctx, t, n.BackendDOMNodeID)
+		} else if strings.EqualFold(role, "StaticText") && textBudget > 0 {
+			textBudget--
+			sn.Visible = snapshotNodeVisibility(ctx, t, n.BackendDOMNodeID)
+		}
 		domTypeKnown := !textInputRole(role)
 		domPassword := false
 		// Chromium normally masks password AX values. Verify the DOM input type
@@ -709,7 +718,7 @@ func (st *automationState) resolve(ctx context.Context, t cdp.Session, p map[str
 
 func (st *automationState) geometry(ctx context.Context, t cdp.Session, obj string, scroll, actionable bool) (x, y float64, err error) {
 	fn := `function(sc,act){
-if(!this.isConnected)return {error:'stale'};if(sc)this.scrollIntoView({block:'center',inline:'center'});
+if(!this.isConnected)return {error:'stale'};if(this.nodeType!==Node.ELEMENT_NODE)return {error:'non_element'};if(sc)this.scrollIntoView({block:'center',inline:'center'});
 let r=this.getBoundingClientRect(),s=getComputedStyle(this);if(r.width<=0||r.height<=0||s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none')return {error:'hidden'};
 let x=r.left+r.width/2,y=r.top+r.height/2;if(x<0||y<0||x>=innerWidth||y>=innerHeight)return {error:'outside_viewport'};
 if(act&&(this.matches(':disabled,[aria-disabled="true"]')||this.closest('[inert]')))return {error:'disabled'};
@@ -724,6 +733,9 @@ if(!hit||!(hit===this||this.contains(hit)))return {error:'obscured'};return {x:x
 		Error string
 	}
 	if json.Unmarshal(r.Value, &v) != nil || v.Error != "" {
+		if v.Error == "non_element" {
+			return 0, 0, autoErr("not_interactable", "target is a text or other non-element node; select its intended visible label or control")
+		}
 		code := map[string]string{"stale": "stale_ref", "obscured": "element_obscured", "disabled": "not_interactable", "outside_viewport": "not_interactable", "hidden": "not_interactable"}[v.Error]
 		if code == "" {
 			code = "not_interactable"
