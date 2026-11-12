@@ -208,6 +208,11 @@ JSON
 
 `snapshot` 返回 accessibility tree、页面 `url/title/text`、`snapshotId` 及节点 `ref`（如 `@e12`）。ref：
 
+对于部分 radio 和 StaticText 节点，快照尽力附带 `visible` 布尔值；字段缺失表示未知，
+包括旧宿主、受裁剪节点、检查失败或超出有限检查预算。该字段只表示布局可见性的
+近似观察，不证明目标可点击、未遮挡或已获得授权；不会用它自动选择歧义候选。
+点击文本或其他非元素节点返回 `not_interactable`，不会自动点击其祖先。
+
 - 只绑定产生它的 tab/session 和该 document 的 loader/navigation epoch；不能跨 tab 使用。
 - 同一 document 的后续 snapshot 会尽量保持同一 backend node 的 ref，且 ref 名称不会回收。
 - 导航/reload 后旧 ref 返回 `stale_ref`；节点 detached 也返回 `stale_ref`。
