@@ -315,14 +315,26 @@ func decodeAXValue(v accessibility.Value) any {
 }
 
 type snapshotNode struct {
-	Ref      string `json:"ref,omitempty"`
-	Role     string `json:"role"`
-	Name     string `json:"name,omitempty"`
-	Value    any    `json:"value,omitempty"`
-	Depth    int    `json:"depth"`
-	Disabled bool   `json:"disabled,omitempty"`
-	Checked  any    `json:"checked,omitempty"`
-	Visible  *bool  `json:"visible,omitempty"`
+	Ref       string `json:"ref,omitempty"`
+	ParentRef string `json:"parentRef,omitempty"`
+	Role      string `json:"role"`
+	Name      string `json:"name,omitempty"`
+	Value     any    `json:"value,omitempty"`
+	Depth     int    `json:"depth"`
+	Disabled  bool   `json:"disabled,omitempty"`
+	Checked   any    `json:"checked,omitempty"`
+	Visible   *bool  `json:"visible,omitempty"`
+}
+
+// snapshotParent records the closest emitted AX ancestor, carrying it through
+// ignored nodes. The false result marks an out-of-order or incomplete tree.
+func snapshotParent(ancestors map[string]string, id, parent string) (string, bool) {
+	ref, ok := ancestors[parent]
+	if parent == "" {
+		ok = true
+	}
+	ancestors[id] = ref
+	return ref, ok
 }
 
 func strval(v axValue) string {
@@ -415,6 +427,10 @@ func (st *automationState) snapshot(ctx context.Context, t cdp.Session, p map[st
 		return nil, err
 	}
 	depths := map[string]int{}
+	// AX nodes can arrive breadth-first. Carry the nearest emitted ancestor
+	// through ignored nodes rather than making clients guess from depth/order.
+	ancestors := map[string]string{}
+	parentLinks := true
 	interactive := boolParam(p, "interactive", false)
 	compact := boolParam(p, "compact", false)
 	includeText := boolParam(p, "includeText", !interactive && !compact)
@@ -464,6 +480,8 @@ func (st *automationState) snapshot(ctx context.Context, t cdp.Session, p map[st
 			d = depths[n.ParentID] + 1
 		}
 		depths[n.NodeID] = d
+		parentRef, knownParent := snapshotParent(ancestors, n.NodeID, n.ParentID)
+		parentLinks = parentLinks && knownParent
 		role := strval(n.Role)
 		if n.Ignored || n.BackendDOMNodeID == 0 || (interactive && !interactiveRole(role)) || (compact && (role == "generic" || role == "none" || role == "StaticText")) || (maxDepth >= 0 && d > maxDepth) {
 			continue
@@ -479,7 +497,8 @@ func (st *automationState) snapshot(ctx context.Context, t cdp.Session, p map[st
 			st.back[n.BackendDOMNodeID] = ref
 		}
 		st.refs[ref] = automationRef{Backend: n.BackendDOMNodeID, Loader: loader, Frame: st.frame, Target: st.targetKey()}
-		sn := snapshotNode{Ref: "@" + ref, Role: role, Name: strval(n.Name), Depth: d}
+		ancestors[n.NodeID] = "@" + ref
+		sn := snapshotNode{Ref: "@" + ref, ParentRef: parentRef, Role: role, Name: strval(n.Name), Depth: d}
 		if strings.EqualFold(role, "radio") && radioBudget > 0 {
 			radioBudget--
 			sn.Visible = snapshotNodeVisibility(ctx, t, n.BackendDOMNodeID)
@@ -534,7 +553,7 @@ func (st *automationState) snapshot(ctx context.Context, t cdp.Session, p map[st
 			url = s
 		}
 	}
-	result := map[string]any{"snapshotId": loader, "url": url, "title": title, "nodes": nodes, "truncated": truncated, "emittedNodes": len(nodes)}
+	result := map[string]any{"snapshotId": loader, "url": url, "title": title, "nodes": nodes, "truncated": truncated, "emittedNodes": len(nodes), "parentLinks": parentLinks}
 	if includeText {
 		text, err := st.evaluateValue(ctx, t, "document.body ? document.body.innerText : ''", false)
 		if err != nil {
@@ -1371,13 +1390,16 @@ func (st *automationState) is(ctx context.Context, t cdp.Session, p map[string]j
 	}
 	defer release(ctx, t, obj)
 	kind := strings.ToLower(stringParam(p, "kind"))
-	fn := map[string]string{"visible": `function(){let r=this.getBoundingClientRect(),s=getComputedStyle(this);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'}`, "enabled": `function(){return !this.disabled&&!this.matches('[aria-disabled=true]')}`, "checked": `function(){return !!this.checked}`}[kind]
+	fn := map[string]string{"visible": snapshotVisibilityFunction, "enabled": `function(){return !this.disabled&&!this.matches('[aria-disabled=true]')}`, "checked": `function(){return !!this.checked}`}[kind]
 	if fn == "" {
 		return nil, autoErr("invalid_params", "unknown is kind %q", kind)
 	}
 	r, err := callFunction(ctx, t, obj, fn, nil, true)
 	if err != nil {
 		return nil, err
+	}
+	if kind == "visible" && string(r.Value) == "null" {
+		return nil, nil
 	}
 	var v bool
 	_ = json.Unmarshal(r.Value, &v)
