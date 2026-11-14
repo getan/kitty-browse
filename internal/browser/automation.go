@@ -728,7 +728,7 @@ func (st *automationState) resolve(ctx context.Context, t cdp.Session, p map[str
 	if n >= 0 {
 		release(ctx, t, r.ObjectID)
 		if n == 0 {
-			return "", autoErr("not_found", "selector %q matched no elements", sel)
+			return "", autoErr("not_found", "selector %q matched no elements (note: :nth-of-type counts same-type siblings, not matches; use :nth-child or a unique attribute)", sel)
 		}
 		return "", autoErr("ambiguous_locator", "selector %q matched %d elements", sel, n)
 	}
@@ -736,13 +736,20 @@ func (st *automationState) resolve(ctx context.Context, t cdp.Session, p map[str
 }
 
 func (st *automationState) geometry(ctx context.Context, t cdp.Session, obj string, scroll, actionable bool) (x, y float64, err error) {
+	// A snapshot ref can name a text node (a Draft.js paragraph, a table cell's
+	// label). Clicking it used to fail with not_interactable even though the
+	// text clearly sits inside a clickable element, so the geometry resolves a
+	// text node to its parent element and measures that instead.
 	fn := `function(sc,act){
-if(!this.isConnected)return {error:'stale'};if(this.nodeType!==Node.ELEMENT_NODE)return {error:'non_element'};if(sc)this.scrollIntoView({block:'center',inline:'center'});
-let r=this.getBoundingClientRect(),s=getComputedStyle(this);if(r.width<=0||r.height<=0||s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none')return {error:'hidden'};
+let el=this;
+if(el.nodeType!==Node.ELEMENT_NODE){el=el.parentElement}
+if(!el||el.nodeType!==Node.ELEMENT_NODE||!el.isConnected)return {error:'stale'};
+if(sc)el.scrollIntoView({block:'center',inline:'center'});
+let r=el.getBoundingClientRect(),s=getComputedStyle(el);if(r.width<=0||r.height<=0||s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none')return {error:'hidden'};
 let x=r.left+r.width/2,y=r.top+r.height/2;if(x<0||y<0||x>=innerWidth||y>=innerHeight)return {error:'outside_viewport'};
-if(act&&(this.matches(':disabled,[aria-disabled="true"]')||this.closest('[inert]')))return {error:'disabled'};
+if(act&&(el.matches(':disabled,[aria-disabled="true"]')||el.closest('[inert]')))return {error:'disabled'};
 let hit=document.elementFromPoint(x,y);while(hit&&hit.shadowRoot){let n=hit.shadowRoot.elementFromPoint(x,y);if(!n||n===hit)break;hit=n}
-if(!hit||!(hit===this||this.contains(hit)))return {error:'obscured'};return {x:x,y:y}}`
+if(!hit||!(el===hit||el.contains(hit)))return {error:'obscured'};return {x:x,y:y}}`
 	r, e := callFunction(ctx, t, obj, fn, []callArg{{Value: scroll}, {Value: actionable}}, true)
 	if e != nil {
 		return 0, 0, e
