@@ -51,18 +51,18 @@ func TestSegmentedSnapshotAndTextNodeRecoveryIntegration(t *testing.T) {
 	if radio == nil || radio.Visible == nil || *radio.Visible || text == nil || text.Visible == nil || !*text.Visible {
 		t.Fatalf("expected hidden radio and visible text evidence: %s", raw)
 	}
-	for _, n := range []*snapshotNode{radio, text} {
-		_, err := s.Automate(context.Background(), "click", json.RawMessage(`{"ref":`+strconvQuote(n.Ref)+`}`))
-		if automationErrorCode(err) != "not_interactable" {
-			t.Fatalf("%s click: %v", n.Role, err)
-		}
-		if n.Role == "StaticText" && !strings.Contains(err.Error(), "non-element") {
-			t.Fatalf("text node received unclear error: %v", err)
-		}
+	// The hidden radio has no clickable geometry, so it still fails.
+	if _, err := s.Automate(context.Background(), "click", json.RawMessage(`{"ref":`+strconvQuote(radio.Ref)+`}`)); automationErrorCode(err) != "not_interactable" {
+		t.Fatalf("hidden radio click: %v", err)
+	}
+	// A StaticText ref is not an element, but it sits inside a label that is:
+	// the geometry falls back to the parent element instead of failing.
+	if _, err := s.Automate(context.Background(), "click", json.RawMessage(`{"ref":`+strconvQuote(text.Ref)+`}`)); err != nil {
+		t.Fatalf("StaticText click did not reach its parent element: %v", err)
 	}
 	result, err := s.Automate(context.Background(), "get", json.RawMessage(`{"kind":"attr","selector":"body","name":"data-clicked"}`))
-	if err != nil || string(result) != "null" {
-		t.Fatalf("failed targets dispatched a click: %s, %v", result, err)
+	if err != nil || string(result) != `"yes"` {
+		t.Fatalf("text-node click did not reach the label: %s, %v", result, err)
 	}
 }
 
